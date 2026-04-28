@@ -49,6 +49,10 @@ func (h *JournalHandler) UpsertVibe(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "mood_emoji is required"})
 		return
 	}
+	if req.Title == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "title is required"})
+		return
+	}
 
 	if err := service.UpsertVibe(userID, req); err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "internal error"})

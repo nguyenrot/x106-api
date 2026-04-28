@@ -24,9 +24,11 @@ func main() {
 	}
 	defer database.Close()
 
-	authH := handler.NewAuthHandler(cfg)
-	userH := handler.NewUserHandler()
+	authH    := handler.NewAuthHandler(cfg)
+	userH    := handler.NewUserHandler()
 	journalH := handler.NewJournalHandler()
+	contentH := handler.NewContentHandler()
+	adminH   := handler.NewAdminHandler(cfg)
 
 	r := chi.NewRouter()
 
@@ -43,6 +45,20 @@ func main() {
 		r.Post("/register", authH.Register)
 		r.Post("/login", authH.Login)
 		r.Post("/logout", authH.Logout)
+	})
+
+	// ── Public content ────────────────────────
+	r.Get("/api/v1/content/{app}/{section}", contentH.GetSection)
+
+	// ── Admin auth ────────────────────────────
+	r.Post("/api/v1/admin/login", adminH.Login)
+	r.Post("/api/v1/admin/logout", adminH.Logout)
+
+	// ── Admin protected ───────────────────────
+	r.Group(func(r chi.Router) {
+		r.Use(core.AdminAuth(cfg))
+		r.Get("/api/v1/admin/content/{app}", contentH.ListByApp)
+		r.Put("/api/v1/admin/content/{app}/{section}", contentH.UpsertSection)
 	})
 
 	// ── Protected routes ──────────────────────

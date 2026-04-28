@@ -6,16 +6,18 @@ import (
 )
 
 type Config struct {
-	ServerPort  string
-	DBHost      string
-	DBPort      string
-	DBName      string
-	DBUser      string
-	DBPassword  string
-	JWTSecret   string
-	JWTDuration time.Duration
-	CookieDomain string
-	Env         string
+	ServerPort       string
+	DBHost           string
+	DBPort           string
+	DBName           string
+	DBUser           string
+	DBPassword       string
+	JWTSecret        string
+	JWTDuration      time.Duration
+	CookieDomain     string
+	Env              string
+	AdminUsername    string
+	AdminPasswordHash string
 }
 
 func Load() *Config {
@@ -28,8 +30,10 @@ func Load() *Config {
 		DBPassword:   getEnv("DB_PASSWORD", ""),
 		JWTSecret:    getEnv("JWT_SECRET", "x106-dev-secret-change-in-production"),
 		JWTDuration:  30 * 24 * time.Hour,
-		CookieDomain: getEnv("COOKIE_DOMAIN", ".pkn.io.vn"),
-		Env:          getEnv("ENV", "development"),
+		CookieDomain:      getEnv("COOKIE_DOMAIN", ".pkn.io.vn"),
+		Env:               getEnv("ENV", "development"),
+		AdminUsername:     getEnv("ADMIN_USERNAME", ""),
+		AdminPasswordHash: getEnv("ADMIN_PASSWORD_HASH", ""),
 	}
 }
 

@@ -38,17 +38,19 @@ func (d *NullDateOnly) Scan(value interface{}) error {
 }
 
 type Vibe struct {
-	ID        string         `json:"id"`
-	UserID    string         `json:"user_id"`
-	Date      DateOnly       `json:"date"`
-	MoodEmoji string         `json:"mood_emoji"`
-	Note      *string        `json:"note,omitempty"`
-	CreatedAt time.Time      `json:"created_at"`
+	ID        string    `json:"id"`
+	UserID    string    `json:"user_id"`
+	Date      DateOnly  `json:"date"`
+	MoodEmoji string    `json:"mood_emoji"`
+	Title     string    `json:"title"`
+	Note      *string   `json:"note,omitempty"`
+	CreatedAt time.Time `json:"created_at"`
 }
 
 type UpsertVibeRequest struct {
 	Date      string  `json:"date"`
 	MoodEmoji string  `json:"mood_emoji"`
+	Title     string  `json:"title"`
 	Note      *string `json:"note,omitempty"`
 }
 

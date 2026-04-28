@@ -13,7 +13,7 @@ var ErrVibeNotFound = errors.New("vibe not found")
 
 func ListVibes(userID string) ([]model.Vibe, error) {
 	rows, err := database.DB.Query(
-		`SELECT id, user_id, date, mood_emoji, note, created_at
+		`SELECT id, user_id, date, mood_emoji, title, note, created_at
 		 FROM vibes WHERE user_id = ? ORDER BY date DESC`,
 		userID,
 	)
@@ -25,7 +25,7 @@ func ListVibes(userID string) ([]model.Vibe, error) {
 	var vibes []model.Vibe
 	for rows.Next() {
 		var v model.Vibe
-		if err := rows.Scan(&v.ID, &v.UserID, &v.Date, &v.MoodEmoji, &v.Note, &v.CreatedAt); err != nil {
+		if err := rows.Scan(&v.ID, &v.UserID, &v.Date, &v.MoodEmoji, &v.Title, &v.Note, &v.CreatedAt); err != nil {
 			return nil, err
 		}
 		vibes = append(vibes, v)
@@ -37,10 +37,10 @@ func GetTodayVibe(userID string) (*model.Vibe, error) {
 	today := todayLocal()
 	v := &model.Vibe{}
 	err := database.DB.QueryRow(
-		`SELECT id, user_id, date, mood_emoji, note, created_at
+		`SELECT id, user_id, date, mood_emoji, title, note, created_at
 		 FROM vibes WHERE user_id = ? AND date = ? LIMIT 1`,
 		userID, today,
-	).Scan(&v.ID, &v.UserID, &v.Date, &v.MoodEmoji, &v.Note, &v.CreatedAt)
+	).Scan(&v.ID, &v.UserID, &v.Date, &v.MoodEmoji, &v.Title, &v.Note, &v.CreatedAt)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, nil
 	}
@@ -56,10 +56,10 @@ func UpsertVibe(userID string, req model.UpsertVibeRequest) error {
 		date = todayLocal()
 	}
 	_, err := database.DB.Exec(
-		`INSERT INTO vibes (user_id, date, mood_emoji, note)
-		 VALUES (?, ?, ?, ?)
-		 ON DUPLICATE KEY UPDATE mood_emoji = VALUES(mood_emoji), note = VALUES(note)`,
-		userID, date, req.MoodEmoji, req.Note,
+		`INSERT INTO vibes (user_id, date, mood_emoji, title, note)
+		 VALUES (?, ?, ?, ?, ?)
+		 ON DUPLICATE KEY UPDATE mood_emoji = VALUES(mood_emoji), title = VALUES(title), note = VALUES(note)`,
+		userID, date, req.MoodEmoji, req.Title, req.Note,
 	)
 	return err
 }
