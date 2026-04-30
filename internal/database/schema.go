@@ -1,0 +1,183 @@
+package database
+
+import (
+	"database/sql"
+	"fmt"
+	"strings"
+)
+
+func EnsureSchema() error {
+	if err := ensureUsersTable(); err != nil {
+		return err
+	}
+	if err := migrateJournalUsers(); err != nil {
+		return err
+	}
+	if err := ensureArtworksTable(); err != nil {
+		return err
+	}
+	return nil
+}
+
+func ensureUsersTable() error {
+	_, err := DB.Exec(`
+		CREATE TABLE IF NOT EXISTS users (
+			id            VARCHAR(36)  NOT NULL,
+			username      VARCHAR(50)  NOT NULL,
+			email         VARCHAR(255),
+			password_hash VARCHAR(255) NOT NULL,
+			display_name  VARCHAR(100),
+			avatar_url    VARCHAR(500),
+			created_at    DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP,
+			updated_at    DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+			PRIMARY KEY (id),
+			UNIQUE KEY uq_users_username (username)
+		) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+	`)
+	if err != nil {
+		return fmt.Errorf("ensure users table: %w", err)
+	}
+
+	return ensureUserColumns()
+}
+
+func ensureUserColumns() error {
+	columns, err := tableColumns("users")
+	if err != nil {
+		return err
+	}
+
+	alterations := []struct {
+		column string
+		sql    string
+	}{
+		{"email", "ADD COLUMN email VARCHAR(255) AFTER username"},
+		{"display_name", "ADD COLUMN display_name VARCHAR(100) AFTER password_hash"},
+		{"avatar_url", "ADD COLUMN avatar_url VARCHAR(500) AFTER display_name"},
+		{"created_at", "ADD COLUMN created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP"},
+		{"updated_at", "ADD COLUMN updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP"},
+	}
+
+	for _, alteration := range alterations {
+		if columns[alteration.column] {
+			continue
+		}
+		if _, err := DB.Exec("ALTER TABLE users " + alteration.sql); err != nil {
+			return fmt.Errorf("ensure users.%s: %w", alteration.column, err)
+		}
+	}
+	return nil
+}
+
+func migrateJournalUsers() error {
+	exists, err := tableExists("journal_users")
+	if err != nil {
+		return err
+	}
+	if !exists {
+		return nil
+	}
+
+	columns, err := tableColumns("journal_users")
+	if err != nil {
+		return err
+	}
+	if !columns["username"] || !columns["password_hash"] {
+		return nil
+	}
+
+	selects := []string{
+		nullableColumnExpr(columns, "id", "UUID()"),
+		"username",
+		columnExpr(columns, "email", "NULL"),
+		"password_hash",
+		columnExpr(columns, "display_name", "NULL"),
+		columnExpr(columns, "avatar_url", "NULL"),
+		nullableColumnExpr(columns, "created_at", "CURRENT_TIMESTAMP"),
+		nullableColumnExpr(columns, "updated_at", "CURRENT_TIMESTAMP"),
+	}
+
+	_, err = DB.Exec(`
+		INSERT IGNORE INTO users (id, username, email, password_hash, display_name, avatar_url, created_at, updated_at)
+		SELECT ` + strings.Join(selects, ", ") + ` FROM journal_users
+	`)
+	if err != nil {
+		return fmt.Errorf("migrate journal_users to users: %w", err)
+	}
+	return nil
+}
+
+func ensureArtworksTable() error {
+	_, err := DB.Exec(`
+		CREATE TABLE IF NOT EXISTS artworks (
+			id                 VARCHAR(36)  NOT NULL,
+			user_id            VARCHAR(36)  NOT NULL,
+			title              VARCHAR(80)  NOT NULL,
+			prompt             VARCHAR(180) NOT NULL,
+			style              VARCHAR(40)  NOT NULL,
+			palette            VARCHAR(60)  NOT NULL,
+			seed               BIGINT       NOT NULL,
+			settings_json      JSON         NOT NULL,
+			thumbnail_data_url MEDIUMTEXT   NOT NULL,
+			created_at         DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP,
+			updated_at         DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+			PRIMARY KEY (id),
+			KEY idx_artworks_user_created (user_id, created_at),
+			CONSTRAINT fk_artworks_user FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+		) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+	`)
+	if err != nil {
+		return fmt.Errorf("ensure artworks table: %w", err)
+	}
+	return nil
+}
+
+func tableExists(table string) (bool, error) {
+	var name string
+	err := DB.QueryRow(
+		`SELECT TABLE_NAME FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = ? LIMIT 1`,
+		table,
+	).Scan(&name)
+	if err == sql.ErrNoRows {
+		return false, nil
+	}
+	if err != nil {
+		return false, fmt.Errorf("check table %s: %w", table, err)
+	}
+	return true, nil
+}
+
+func tableColumns(table string) (map[string]bool, error) {
+	rows, err := DB.Query(
+		`SELECT COLUMN_NAME FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = ?`,
+		table,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("list columns %s: %w", table, err)
+	}
+	defer rows.Close()
+
+	columns := make(map[string]bool)
+	for rows.Next() {
+		var column string
+		if err := rows.Scan(&column); err != nil {
+			return nil, err
+		}
+		columns[column] = true
+	}
+	return columns, rows.Err()
+}
+
+func columnExpr(columns map[string]bool, column string, fallback string) string {
+	if columns[column] {
+		return column
+	}
+	return fallback
+}
+
+func nullableColumnExpr(columns map[string]bool, column string, fallback string) string {
+	if columns[column] {
+		return "COALESCE(" + column + ", " + fallback + ")"
+	}
+	return fallback
+}

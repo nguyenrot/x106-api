@@ -23,12 +23,16 @@ func main() {
 		log.Fatalf("[db] failed to connect: %v", err)
 	}
 	defer database.Close()
+	if err := database.EnsureSchema(); err != nil {
+		log.Fatalf("[db] failed to ensure schema: %v", err)
+	}
 
-	authH    := handler.NewAuthHandler(cfg)
-	userH    := handler.NewUserHandler()
+	authH := handler.NewAuthHandler(cfg)
+	userH := handler.NewUserHandler()
 	journalH := handler.NewJournalHandler()
 	contentH := handler.NewContentHandler()
-	adminH   := handler.NewAdminHandler(cfg)
+	adminH := handler.NewAdminHandler(cfg)
+	artworkH := handler.NewArtworkHandler()
 
 	r := chi.NewRouter()
 
@@ -74,6 +78,14 @@ func main() {
 			r.Get("/today", journalH.GetTodayVibe)
 			r.Post("/", journalH.UpsertVibe)
 			r.Get("/stats", journalH.Stats)
+		})
+
+		// art.pkn.io.vn
+		r.Route("/api/v1/artworks", func(r chi.Router) {
+			r.Get("/", artworkH.ListArtworks)
+			r.Post("/", artworkH.CreateArtwork)
+			r.Get("/{id}", artworkH.GetArtwork)
+			r.Delete("/{id}", artworkH.DeleteArtwork)
 		})
 	})
 

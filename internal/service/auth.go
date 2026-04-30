@@ -9,12 +9,12 @@ import (
 	"golang.org/x/crypto/bcrypt"
 )
 
-const userTable = "journal_users"
+const userTable = "users"
 
 var (
-	ErrUserExists       = errors.New("username already taken")
-	ErrInvalidCreds     = errors.New("invalid username or password")
-	ErrUserNotFound     = errors.New("user not found")
+	ErrUserExists   = errors.New("username already taken")
+	ErrInvalidCreds = errors.New("invalid username or password")
+	ErrUserNotFound = errors.New("user not found")
 )
 
 func Register(req model.RegisterRequest) (*model.User, error) {
@@ -32,8 +32,8 @@ func Register(req model.RegisterRequest) (*model.User, error) {
 	}
 
 	_, err = database.DB.Exec(
-		`INSERT INTO `+userTable+` (username, password_hash) VALUES (?, ?)`,
-		req.Username, string(hash),
+		`INSERT INTO `+userTable+` (id, username, password_hash) VALUES (?, ?, ?)`,
+		newID(), req.Username, string(hash),
 	)
 	if err != nil {
 		return nil, err

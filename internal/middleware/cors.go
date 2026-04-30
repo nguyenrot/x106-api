@@ -12,14 +12,15 @@ func CORS(cfg *config.Config) func(http.Handler) http.Handler {
 			origin := r.Header.Get("Origin")
 
 			allowed := map[string]bool{
-				"http://localhost:3000":       true,
-				"http://localhost:3001":       true,
-				"http://localhost:3002":       true,
-				"http://localhost:3003":       true,
-				"https://pkn.io.vn":           true,
-				"https://me.pkn.io.vn":        true,
-				"https://journal.pkn.io.vn":   true,
-				"https://admin.pkn.io.vn":     true,
+				"http://localhost:3000":     true,
+				"http://localhost:3001":     true,
+				"http://localhost:3002":     true,
+				"http://localhost:3003":     true,
+				"https://pkn.io.vn":         true,
+				"https://me.pkn.io.vn":      true,
+				"https://journal.pkn.io.vn": true,
+				"https://art.pkn.io.vn":     true,
+				"https://admin.pkn.io.vn":   true,
 			}
 
 			if cfg.IsDev() || allowed[origin] {
