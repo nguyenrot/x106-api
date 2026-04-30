@@ -51,7 +51,9 @@ func ensureUserColumns() error {
 		column string
 		sql    string
 	}{
+		{"username", "ADD COLUMN username VARCHAR(50) AFTER id"},
 		{"email", "ADD COLUMN email VARCHAR(255) AFTER username"},
+		{"password_hash", "ADD COLUMN password_hash VARCHAR(255) AFTER email"},
 		{"display_name", "ADD COLUMN display_name VARCHAR(100) AFTER password_hash"},
 		{"avatar_url", "ADD COLUMN avatar_url VARCHAR(500) AFTER display_name"},
 		{"created_at", "ADD COLUMN created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP"},
@@ -98,8 +100,14 @@ func migrateJournalUsers() error {
 	}
 
 	_, err = DB.Exec(`
-		INSERT IGNORE INTO users (id, username, email, password_hash, display_name, avatar_url, created_at, updated_at)
+		INSERT INTO users (id, username, email, password_hash, display_name, avatar_url, created_at, updated_at)
 		SELECT ` + strings.Join(selects, ", ") + ` FROM journal_users
+		ON DUPLICATE KEY UPDATE
+			username = COALESCE(NULLIF(users.username, ''), VALUES(username)),
+			email = COALESCE(users.email, VALUES(email)),
+			password_hash = COALESCE(NULLIF(users.password_hash, ''), VALUES(password_hash)),
+			display_name = COALESCE(users.display_name, VALUES(display_name)),
+			avatar_url = COALESCE(users.avatar_url, VALUES(avatar_url))
 	`)
 	if err != nil {
 		return fmt.Errorf("migrate journal_users to users: %w", err)
