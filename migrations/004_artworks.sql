@@ -26,8 +26,7 @@ CREATE TABLE IF NOT EXISTS artworks (
     created_at         DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at         DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
     PRIMARY KEY (id),
-    KEY idx_artworks_user_created (user_id, created_at),
-    CONSTRAINT fk_artworks_user FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+    KEY idx_artworks_user_created (user_id, created_at)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 -- Production safety note:
