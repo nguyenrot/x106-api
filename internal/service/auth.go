@@ -32,9 +32,15 @@ func Register(req model.RegisterRequest) (*model.User, error) {
 	}
 
 	_, err = database.DB.Exec(
-		`INSERT INTO `+userTable+` (id, username, password_hash) VALUES (?, ?, ?)`,
-		newID(), req.Username, string(hash),
+		`INSERT INTO `+userTable+` (username, password_hash) VALUES (?, ?)`,
+		req.Username, string(hash),
 	)
+	if err != nil {
+		_, err = database.DB.Exec(
+			`INSERT INTO `+userTable+` (id, username, password_hash) VALUES (?, ?, ?)`,
+			newID(), req.Username, string(hash),
+		)
+	}
 	if err != nil {
 		return nil, err
 	}
