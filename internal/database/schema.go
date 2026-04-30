@@ -120,13 +120,17 @@ func ensureArtworksTable() error {
 		CREATE TABLE IF NOT EXISTS artworks (
 			id                 VARCHAR(36)  NOT NULL,
 			user_id            VARCHAR(36)  NOT NULL,
+			kind               VARCHAR(24)  NOT NULL DEFAULT 'snapshot',
+			source_id          VARCHAR(80),
 			title              VARCHAR(80)  NOT NULL,
 			prompt             VARCHAR(180) NOT NULL,
 			style              VARCHAR(40)  NOT NULL,
 			palette            VARCHAR(60)  NOT NULL,
 			seed               BIGINT       NOT NULL,
 			settings_json      JSON         NOT NULL,
+			scene_json         JSON         NOT NULL,
 			thumbnail_data_url MEDIUMTEXT   NOT NULL,
+			asset_data_url     MEDIUMTEXT,
 			created_at         DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP,
 			updated_at         DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
 			PRIMARY KEY (id),
@@ -135,6 +139,33 @@ func ensureArtworksTable() error {
 	`)
 	if err != nil {
 		return fmt.Errorf("ensure artworks table: %w", err)
+	}
+	return ensureArtworkColumns()
+}
+
+func ensureArtworkColumns() error {
+	columns, err := tableColumns("artworks")
+	if err != nil {
+		return err
+	}
+
+	alterations := []struct {
+		column string
+		sql    string
+	}{
+		{"kind", "ADD COLUMN kind VARCHAR(24) NOT NULL DEFAULT 'snapshot' AFTER user_id"},
+		{"source_id", "ADD COLUMN source_id VARCHAR(80) AFTER kind"},
+		{"scene_json", "ADD COLUMN scene_json JSON NOT NULL AFTER settings_json"},
+		{"asset_data_url", "ADD COLUMN asset_data_url MEDIUMTEXT AFTER thumbnail_data_url"},
+	}
+
+	for _, alteration := range alterations {
+		if columns[alteration.column] {
+			continue
+		}
+		if _, err := DB.Exec("ALTER TABLE artworks " + alteration.sql); err != nil {
+			return fmt.Errorf("ensure artworks.%s: %w", alteration.column, err)
+		}
 	}
 	return nil
 }

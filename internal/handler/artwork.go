@@ -15,8 +15,12 @@ const (
 	maxArtworkPrompt    = 180
 	maxArtworkStyle     = 40
 	maxArtworkPalette   = 60
+	maxArtworkKind      = 24
+	maxArtworkSourceID  = 80
 	maxArtworkSettings  = 4096
-	maxArtworkThumbnail = 360000
+	maxArtworkScene     = 8192
+	maxArtworkThumbnail = 520000
+	maxArtworkAsset     = 900000
 )
 
 type ArtworkHandler struct{}
@@ -69,27 +73,55 @@ func (h *ArtworkHandler) CreateArtwork(w http.ResponseWriter, r *http.Request) {
 	req.Prompt = cleanText(req.Prompt, maxArtworkPrompt)
 	req.Style = cleanText(req.Style, maxArtworkStyle)
 	req.Palette = cleanText(req.Palette, maxArtworkPalette)
+	req.Kind = cleanText(req.Kind, maxArtworkKind)
+	if req.SourceID != nil {
+		sourceID := cleanText(*req.SourceID, maxArtworkSourceID)
+		req.SourceID = &sourceID
+	}
 
 	if req.Prompt == "" {
-		req.Prompt = "Untitled dream"
+		req.Prompt = "Digital artwork"
 	}
 	if req.Title == "" {
 		req.Title = req.Prompt
 	}
 	if req.Style == "" {
-		req.Style = "aurora-bloom"
+		req.Style = "bold-digital-gallery"
 	}
 	if req.Palette == "" {
-		req.Palette = "aurora-milk"
+		req.Palette = "signal-red"
+	}
+	if req.Kind == "" {
+		req.Kind = "snapshot"
+	}
+	if !validArtworkKind(req.Kind) {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "kind must be favorite, upload, or snapshot"})
+		return
 	}
 
-	if err := validateArtworkSettings(req.Settings); err != nil {
+	if err := validateJSONObject(req.Settings, maxArtworkSettings, "settings"); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		return
+	}
+	if err := validateJSONObject(req.Scene, maxArtworkScene, "scene"); err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
 		return
 	}
 	if !validThumbnail(req.ThumbnailDataURL) {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "thumbnail_data_url must be a small webp or jpeg data URL"})
 		return
+	}
+	if req.AssetDataURL != nil {
+		asset := strings.TrimSpace(*req.AssetDataURL)
+		if asset == "" {
+			req.AssetDataURL = nil
+		} else {
+			req.AssetDataURL = &asset
+			if !validDataURL(asset, maxArtworkAsset) {
+				writeJSON(w, http.StatusBadRequest, map[string]string{"error": "asset_data_url must be a small webp or jpeg data URL"})
+				return
+			}
+		}
 	}
 
 	artwork, err := service.CreateArtwork(userID, req)
@@ -130,30 +162,38 @@ func cleanText(value string, max int) string {
 	return string(runes[:max])
 }
 
-func validateArtworkSettings(settings json.RawMessage) error {
-	if len(settings) == 0 {
+func validateJSONObject(value json.RawMessage, max int, label string) error {
+	if len(value) == 0 {
 		return nil
 	}
-	if len(settings) > maxArtworkSettings {
-		return httpError("settings payload is too large")
+	if len(value) > max {
+		return httpError(label + " payload is too large")
 	}
-	if !json.Valid(settings) {
-		return httpError("settings must be valid JSON")
+	if !json.Valid(value) {
+		return httpError(label + " must be valid JSON")
 	}
 
-	trimmed := strings.TrimSpace(string(settings))
+	trimmed := strings.TrimSpace(string(value))
 	if !strings.HasPrefix(trimmed, "{") {
-		return httpError("settings must be a JSON object")
+		return httpError(label + " must be a JSON object")
 	}
 	return nil
 }
 
 func validThumbnail(value string) bool {
-	if len(value) == 0 || len(value) > maxArtworkThumbnail {
+	return validDataURL(value, maxArtworkThumbnail)
+}
+
+func validDataURL(value string, max int) bool {
+	if len(value) == 0 || len(value) > max {
 		return false
 	}
 	return strings.HasPrefix(value, "data:image/webp;base64,") ||
 		strings.HasPrefix(value, "data:image/jpeg;base64,")
+}
+
+func validArtworkKind(kind string) bool {
+	return kind == "favorite" || kind == "upload" || kind == "snapshot"
 }
 
 type httpError string

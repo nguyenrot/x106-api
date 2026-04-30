@@ -13,7 +13,7 @@ var ErrArtworkNotFound = errors.New("artwork not found")
 
 func ListArtworks(userID string) ([]model.Artwork, error) {
 	rows, err := database.DB.Query(
-		`SELECT id, user_id, title, prompt, style, palette, seed, settings_json, thumbnail_data_url, created_at, updated_at
+		`SELECT id, user_id, kind, source_id, title, prompt, style, palette, seed, settings_json, scene_json, thumbnail_data_url, asset_data_url, created_at, updated_at
 		 FROM artworks WHERE user_id = ? ORDER BY created_at DESC LIMIT 60`,
 		userID,
 	)
@@ -35,7 +35,7 @@ func ListArtworks(userID string) ([]model.Artwork, error) {
 
 func GetArtwork(userID string, artworkID string) (*model.Artwork, error) {
 	row := database.DB.QueryRow(
-		`SELECT id, user_id, title, prompt, style, palette, seed, settings_json, thumbnail_data_url, created_at, updated_at
+		`SELECT id, user_id, kind, source_id, title, prompt, style, palette, seed, settings_json, scene_json, thumbnail_data_url, asset_data_url, created_at, updated_at
 		 FROM artworks WHERE user_id = ? AND id = ? LIMIT 1`,
 		userID, artworkID,
 	)
@@ -56,19 +56,27 @@ func CreateArtwork(userID string, req model.CreateArtworkRequest) (*model.Artwor
 	if len(settings) == 0 {
 		settings = json.RawMessage(`{}`)
 	}
+	scene := req.Scene
+	if len(scene) == 0 {
+		scene = json.RawMessage(`{}`)
+	}
 
 	_, err := database.DB.Exec(
-		`INSERT INTO artworks (id, user_id, title, prompt, style, palette, seed, settings_json, thumbnail_data_url)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		`INSERT INTO artworks (id, user_id, kind, source_id, title, prompt, style, palette, seed, settings_json, scene_json, thumbnail_data_url, asset_data_url)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		id,
 		userID,
+		req.Kind,
+		req.SourceID,
 		req.Title,
 		req.Prompt,
 		req.Style,
 		req.Palette,
 		req.Seed,
 		string(settings),
+		string(scene),
 		req.ThumbnailDataURL,
+		req.AssetDataURL,
 	)
 	if err != nil {
 		return nil, err
@@ -103,17 +111,22 @@ type artworkScanner interface {
 func scanArtwork(scanner artworkScanner) (model.Artwork, error) {
 	var artwork model.Artwork
 	var settings []byte
+	var scene []byte
 
 	err := scanner.Scan(
 		&artwork.ID,
 		&artwork.UserID,
+		&artwork.Kind,
+		&artwork.SourceID,
 		&artwork.Title,
 		&artwork.Prompt,
 		&artwork.Style,
 		&artwork.Palette,
 		&artwork.Seed,
 		&settings,
+		&scene,
 		&artwork.ThumbnailDataURL,
+		&artwork.AssetDataURL,
 		&artwork.CreatedAt,
 		&artwork.UpdatedAt,
 	)
@@ -124,7 +137,14 @@ func scanArtwork(scanner artworkScanner) (model.Artwork, error) {
 	if len(settings) == 0 {
 		settings = []byte(`{}`)
 	}
+	if len(scene) == 0 {
+		scene = []byte(`{}`)
+	}
+	if artwork.Kind == "" {
+		artwork.Kind = "snapshot"
+	}
 	artwork.Settings = json.RawMessage(settings)
+	artwork.Scene = json.RawMessage(scene)
 
 	return artwork, nil
 }
