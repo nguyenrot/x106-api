@@ -18,7 +18,7 @@ const (
 	maxArtworkKind      = 24
 	maxArtworkSourceID  = 80
 	maxArtworkSettings  = 4096
-	maxArtworkScene     = 8192
+	maxArtworkScene     = 16384
 	maxArtworkThumbnail = 520000
 	maxArtworkAsset     = 900000
 )
