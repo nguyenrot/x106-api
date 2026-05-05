@@ -425,8 +425,11 @@ OUTPUT: chỉ JSON object, không markdown, không lời dẫn. Schema:
   ]
 }
 
-VÍ DỤ JSON output:
+VÍ DỤ 1 (count vừa, có exotic):
 {"paletteId":"sunset-coral","compositionId":"solo-hero","materialMood":"glow-heavy","motionMood":"pulsing","title":"Đoá rực giữa lặng","textPhrase":"khẽ thở · sáng dần","shapeCount":7,"shapeBias":["torus","disc","sphere"],"harmonyRule":"hero-only","exotic":"giant-solo","heroes":[{"kind":"torus","color":"#ff6b6b","size":1.6,"x":0,"y":0.2,"z":0}]}
+
+VÍ DỤ 2 (count cao, scene dày đặc):
+{"paletteId":"ocean-mist","compositionId":"constellation","materialMood":"glow-heavy","motionMood":"drifting","title":"Vô số ánh","textPhrase":"thiên hà thì thầm","shapeCount":60,"shapeBias":["sphere","disc","icosahedron"],"harmonyRule":"gradient","exotic":"mono-glow","heroes":[]}
 
 Quy tắc:
 - Đa dạng giữa các lần gọi; tránh trùng paletteId/compositionId trong "previous".
