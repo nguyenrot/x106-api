@@ -13,23 +13,27 @@ import (
 // joined with their today's quota usage.
 func ListArtUsers(limit int) ([]model.ArtUserRow, string, error) {
 	today := todayLocal()
+	// users.id (utf8mb4_0900_ai_ci on prod) vs llm_usage.user_id /
+	// artworks.user_id (utf8mb4_unicode_ci) → joining VARCHAR columns from
+	// these tables triggers MySQL error 1267 "Illegal mix of collations".
+	// Force a common collation on each join condition.
 	q := `
 		SELECT u.id,
 		       u.username,
 		       COALESCE(u.display_name, '') AS display_name,
-		       COALESCE(today.count, 0)    AS used_today,
-		       COALESCE(total.count, 0)    AS used_total,
-		       COALESCE(art.count, 0)      AS artworks
+		       COALESCE(today.cnt, 0)      AS used_today,
+		       COALESCE(total.cnt, 0)      AS used_total,
+		       COALESCE(art.cnt, 0)        AS artworks
 		FROM users u
 		LEFT JOIN (
-			SELECT user_id, count FROM llm_usage WHERE date = ?
-		) today ON today.user_id = u.id
+			SELECT user_id, count AS cnt FROM llm_usage WHERE date = ?
+		) today ON today.user_id COLLATE utf8mb4_unicode_ci = u.id COLLATE utf8mb4_unicode_ci
 		LEFT JOIN (
-			SELECT user_id, SUM(count) AS count FROM llm_usage GROUP BY user_id
-		) total ON total.user_id = u.id
+			SELECT user_id, SUM(count) AS cnt FROM llm_usage GROUP BY user_id
+		) total ON total.user_id COLLATE utf8mb4_unicode_ci = u.id COLLATE utf8mb4_unicode_ci
 		LEFT JOIN (
-			SELECT user_id, COUNT(*) AS count FROM artworks GROUP BY user_id
-		) art ON art.user_id = u.id
+			SELECT user_id, COUNT(*) AS cnt FROM artworks GROUP BY user_id
+		) art ON art.user_id COLLATE utf8mb4_unicode_ci = u.id COLLATE utf8mb4_unicode_ci
 		WHERE today.user_id IS NOT NULL
 		   OR total.user_id IS NOT NULL
 		   OR art.user_id   IS NOT NULL
