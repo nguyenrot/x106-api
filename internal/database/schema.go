@@ -16,6 +16,26 @@ func EnsureSchema() error {
 	if err := ensureArtworksTable(); err != nil {
 		return err
 	}
+	if err := ensureLLMUsageTable(); err != nil {
+		return err
+	}
+	return nil
+}
+
+func ensureLLMUsageTable() error {
+	_, err := DB.Exec(`
+		CREATE TABLE IF NOT EXISTS llm_usage (
+			user_id    VARCHAR(36) NOT NULL,
+			date       DATE        NOT NULL,
+			count      INT         NOT NULL DEFAULT 0,
+			updated_at DATETIME    NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+			PRIMARY KEY (user_id, date),
+			CONSTRAINT fk_llm_usage_user FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+		) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+	`)
+	if err != nil {
+		return fmt.Errorf("ensure llm_usage table: %w", err)
+	}
 	return nil
 }
 

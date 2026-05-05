@@ -33,6 +33,7 @@ func main() {
 	contentH := handler.NewContentHandler()
 	adminH := handler.NewAdminHandler(cfg)
 	artworkH := handler.NewArtworkHandler()
+	llmH := handler.NewLLMHandler(cfg)
 
 	r := chi.NewRouter()
 
@@ -86,6 +87,14 @@ func main() {
 			r.Post("/", artworkH.CreateArtwork)
 			r.Get("/{id}", artworkH.GetArtwork)
 			r.Delete("/{id}", artworkH.DeleteArtwork)
+		})
+
+		// art.pkn.io.vn — LLM director (DeepSeek), 5 calls/day/user
+		r.Route("/api/v1/studio/llm", func(r chi.Router) {
+			r.Get("/quota", llmH.Quota)
+			r.Post("/random", llmH.Random)
+			r.Post("/polish", llmH.Polish)
+			r.Post("/remix", llmH.Remix)
 		})
 	})
 

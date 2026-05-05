@@ -2,6 +2,7 @@ package config
 
 import (
 	"os"
+	"strconv"
 	"time"
 )
 
@@ -18,6 +19,10 @@ type Config struct {
 	Env              string
 	AdminUsername    string
 	AdminPasswordHash string
+	DeepSeekAPIKey   string
+	DeepSeekBaseURL  string
+	DeepSeekModel    string
+	LLMDailyLimit    int
 }
 
 func Load() *Config {
@@ -34,7 +39,20 @@ func Load() *Config {
 		Env:               getEnv("ENV", "development"),
 		AdminUsername:     getEnv("ADMIN_USERNAME", ""),
 		AdminPasswordHash: getEnv("ADMIN_PASSWORD_HASH", ""),
+		DeepSeekAPIKey:    getEnv("DEEPSEEK_API_KEY", ""),
+		DeepSeekBaseURL:   getEnv("DEEPSEEK_BASE_URL", "https://api.deepseek.com"),
+		DeepSeekModel:     getEnv("DEEPSEEK_MODEL", "deepseek-v4-flash"),
+		LLMDailyLimit:     getEnvInt("LLM_DAILY_LIMIT", 5),
 	}
+}
+
+func getEnvInt(key string, fallback int) int {
+	if v := os.Getenv(key); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			return n
+		}
+	}
+	return fallback
 }
 
 func (c *Config) DSN() string {
