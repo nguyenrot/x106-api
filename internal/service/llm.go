@@ -312,11 +312,13 @@ func validateAndClampDirection(d *model.LLMDirection) error {
 	}
 	d.TextPhrase = clampRunes(strings.TrimSpace(d.TextPhrase), llmTextPhraseMaxRunes)
 
-	// shapeCount: clamp to 0..12 (0 = engine default)
+	// shapeCount: clamp to 0..100 (0 = engine default).
+	// 100 is a hard ceiling — frontend pad logic uses a golden-angle spiral
+	// to spread up to that many shapes without clumping.
 	if d.ShapeCount < 0 {
 		d.ShapeCount = 0
-	} else if d.ShapeCount > 12 {
-		d.ShapeCount = 12
+	} else if d.ShapeCount > 100 {
+		d.ShapeCount = 100
 	}
 
 	// shapeBias: keep only valid kinds, dedupe
@@ -407,7 +409,7 @@ OUTPUT: chỉ JSON object, không markdown, không lời dẫn. Schema:
   "motionMood": <still|drifting|spinning|pulsing|orbital>,
   "title": <tiếng Việt, ≤ 40 ký tự, có thể dùng "·">,
   "textPhrase": <tiếng Việt, ≤ 60 ký tự; câu thơ/thì thầm; có thể "">,
-  "shapeCount": <số shape engine dùng, 4-12; 0 = engine tự chọn>,
+  "shapeCount": <số shape engine dùng, 4-100; 0 = engine tự chọn. Mặc định 6-12. Đông (>30) chỉ dùng cho composition constellation/mandala/wave/vortex>,
   "shapeBias": <mảng kinds engine ưu tiên khi cần thêm shape; chọn từ: sphere, box, torus, knot, panel, cone, cylinder, capsule, icosahedron, octahedron, disc>,
   "harmonyRule": <alternate|gradient|hero-only|spectrum|""> // alternate=so le 2 màu, gradient=lan tỏa, hero-only=1 màu chính, spectrum=trải đều
   "exotic": <mono-glow|giant-solo|deep-cluster|""> // hiệu ứng mạnh: mono-glow=tất cả phát sáng cùng màu, giant-solo=1 shape khổng lồ, deep-cluster=cụm sát nhau
