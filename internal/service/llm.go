@@ -433,6 +433,7 @@ Quy tắc:
 - Polish: thay đổi nhẹ, giữ tinh thần; ít heroes, có thể bỏ exotic.
 - Remix: dám đổi palette + composition + dùng exotic + 2-3 heroes.
 - exotic chỉ chọn ~30% lần gọi (không lần nào cũng có).
+- KHÔNG dùng exotic "giant-solo" hoặc "deep-cluster" khi shapeCount > 20 — engine sẽ pad thêm shape làm lệch ý đồ exotic. Chỉ "mono-glow" tương thích với count cao.
 - "title" tiếng Việt, chất thơ.
 - "color" trong heroes BẮT BUỘC nằm trong các swatch của palette đã chọn.`
 }
