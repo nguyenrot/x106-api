@@ -8,6 +8,5 @@ CREATE TABLE IF NOT EXISTS llm_usage (
     date       DATE        NOT NULL,
     count      INT         NOT NULL DEFAULT 0,
     updated_at DATETIME    NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-    PRIMARY KEY (user_id, date),
-    CONSTRAINT fk_llm_usage_user FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+    PRIMARY KEY (user_id, date)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
