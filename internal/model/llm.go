@@ -32,13 +32,27 @@ type LLMRequest struct {
 	Previous *LLMPreviousHint `json:"previous,omitempty"`
 }
 
+type LLMHeroShape struct {
+	Kind  string  `json:"kind"`
+	Color string  `json:"color"`
+	Size  float64 `json:"size,omitempty"`
+	X     float64 `json:"x"`
+	Y     float64 `json:"y"`
+	Z     float64 `json:"z,omitempty"`
+}
+
 type LLMDirection struct {
-	PaletteID     string `json:"paletteId"`
-	CompositionID string `json:"compositionId"`
-	MaterialMood  string `json:"materialMood"`
-	MotionMood    string `json:"motionMood"`
-	Title         string `json:"title"`
-	TextPhrase    string `json:"textPhrase,omitempty"`
+	PaletteID     string         `json:"paletteId"`
+	CompositionID string         `json:"compositionId"`
+	MaterialMood  string         `json:"materialMood"`
+	MotionMood    string         `json:"motionMood"`
+	Title         string         `json:"title"`
+	TextPhrase    string         `json:"textPhrase,omitempty"`
+	ShapeCount    int            `json:"shapeCount,omitempty"`
+	ShapeBias     []string       `json:"shapeBias,omitempty"`
+	HarmonyRule   string         `json:"harmonyRule,omitempty"`
+	Exotic        string         `json:"exotic,omitempty"`
+	Heroes        []LLMHeroShape `json:"heroes,omitempty"`
 }
 
 type LLMResponse struct {

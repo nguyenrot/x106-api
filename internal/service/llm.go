@@ -46,6 +46,17 @@ var (
 		"still": true, "drifting": true, "spinning": true,
 		"pulsing": true, "orbital": true,
 	}
+	llmShapeKinds = map[string]bool{
+		"sphere": true, "box": true, "torus": true, "knot": true,
+		"panel": true, "cone": true, "cylinder": true, "capsule": true,
+		"icosahedron": true, "octahedron": true, "disc": true,
+	}
+	llmHarmonyRules = map[string]bool{
+		"alternate": true, "gradient": true, "hero-only": true, "spectrum": true,
+	}
+	llmExotics = map[string]bool{
+		"mono-glow": true, "giant-solo": true, "deep-cluster": true,
+	}
 )
 
 const llmTitleMaxRunes = 40
@@ -272,7 +283,69 @@ func validateAndClampDirection(d *model.LLMDirection) error {
 		return fmt.Errorf("empty title")
 	}
 	d.TextPhrase = clampRunes(strings.TrimSpace(d.TextPhrase), llmTextPhraseMaxRunes)
+
+	// shapeCount: clamp to 0..12 (0 = engine default)
+	if d.ShapeCount < 0 {
+		d.ShapeCount = 0
+	} else if d.ShapeCount > 12 {
+		d.ShapeCount = 12
+	}
+
+	// shapeBias: keep only valid kinds, dedupe
+	if len(d.ShapeBias) > 0 {
+		seen := map[string]bool{}
+		filtered := d.ShapeBias[:0]
+		for _, k := range d.ShapeBias {
+			if llmShapeKinds[k] && !seen[k] {
+				seen[k] = true
+				filtered = append(filtered, k)
+			}
+		}
+		d.ShapeBias = filtered
+	}
+
+	// harmonyRule: drop unknown
+	if d.HarmonyRule != "" && !llmHarmonyRules[d.HarmonyRule] {
+		d.HarmonyRule = ""
+	}
+
+	// exotic: drop unknown
+	if d.Exotic != "" && !llmExotics[d.Exotic] {
+		d.Exotic = ""
+	}
+
+	// heroes: cap to 3, validate kind, clamp positions
+	if len(d.Heroes) > 0 {
+		if len(d.Heroes) > 3 {
+			d.Heroes = d.Heroes[:3]
+		}
+		filtered := d.Heroes[:0]
+		for _, h := range d.Heroes {
+			if !llmShapeKinds[h.Kind] {
+				continue
+			}
+			if h.Size <= 0 {
+				h.Size = 1.0
+			}
+			h.Size = clampFloat(h.Size, 0.4, 1.8)
+			h.X = clampFloat(h.X, -2.5, 2.5)
+			h.Y = clampFloat(h.Y, -1.6, 1.6)
+			h.Z = clampFloat(h.Z, -1.0, 1.0)
+			filtered = append(filtered, h)
+		}
+		d.Heroes = filtered
+	}
 	return nil
+}
+
+func clampFloat(v, min, max float64) float64 {
+	if v < min {
+		return min
+	}
+	if v > max {
+		return max
+	}
+	return v
 }
 
 func clampRunes(s string, max int) string {
@@ -289,25 +362,42 @@ func clampRunes(s string, max int) string {
 // ─── Prompt builders ─────────────────────────────────────────────────────
 
 func buildSystemPrompt() string {
-	return `Bạn là "art director" cho một studio nghệ thuật 3D minimal trên giấy (paper-tone aesthetic). Mỗi lần được gọi, bạn trả VỀ JSON đúng schema dưới đây để hướng dẫn engine sinh layout. Engine xử lý hình học/spacing — bạn chỉ chọn hướng cảm xúc và thẩm mỹ.
+	return `Bạn là "art director" cho một studio nghệ thuật 3D minimal trên giấy (paper-tone aesthetic). Mỗi lần được gọi, bạn trả VỀ JSON đúng schema dưới đây để hướng dẫn engine sinh layout. Engine xử lý spacing/relax/animation — bạn chọn hướng thẩm mỹ + đặt 1-3 "hero shape" cốt lõi.
 
 OUTPUT: chỉ JSON object, không markdown, không lời dẫn. Schema:
 {
-  "paletteId": <one of: poster-bright, museum-pop, soft-electric, forest-calm, sunset-coral, ocean-mist, pastel-garden, mono-bold, tropical-punch, vintage-press>,
-  "compositionId": <one of: row, ring, tower, constellation, mirror, solo-hero, wave, vortex, mandala, cascade, horizon, petal>,
-  "materialMood": <one of: glow-heavy, metal-heavy, matte-heavy, glass-heavy, balanced>,
-  "motionMood": <one of: still, drifting, spinning, pulsing, orbital>,
-  "title": <tiếng Việt, ≤ 40 ký tự, gợi cảm, có thể dùng dấu chấm/·>,
-  "textPhrase": <tiếng Việt ngắn ≤ 60 ký tự, có thể bỏ trống ""; là câu thơ/thì thầm xuất hiện trong cảnh>
+  "paletteId": <poster-bright|museum-pop|soft-electric|forest-calm|sunset-coral|ocean-mist|pastel-garden|mono-bold|tropical-punch|vintage-press>,
+  "compositionId": <row|ring|tower|constellation|mirror|solo-hero|wave|vortex|mandala|cascade|horizon|petal>,
+  "materialMood": <glow-heavy|metal-heavy|matte-heavy|glass-heavy|balanced>,
+  "motionMood": <still|drifting|spinning|pulsing|orbital>,
+  "title": <tiếng Việt, ≤ 40 ký tự, có thể dùng "·">,
+  "textPhrase": <tiếng Việt, ≤ 60 ký tự; câu thơ/thì thầm; có thể "">,
+  "shapeCount": <số shape engine dùng, 4-12; 0 = engine tự chọn>,
+  "shapeBias": <mảng kinds engine ưu tiên khi cần thêm shape; chọn từ: sphere, box, torus, knot, panel, cone, cylinder, capsule, icosahedron, octahedron, disc>,
+  "harmonyRule": <alternate|gradient|hero-only|spectrum|""> // alternate=so le 2 màu, gradient=lan tỏa, hero-only=1 màu chính, spectrum=trải đều
+  "exotic": <mono-glow|giant-solo|deep-cluster|""> // hiệu ứng mạnh: mono-glow=tất cả phát sáng cùng màu, giant-solo=1 shape khổng lồ, deep-cluster=cụm sát nhau
+  "heroes": [ // 1-3 shape NỀN do bạn quyết định vị trí; engine bố cục các shape phụ quanh chúng. Có thể bỏ trống.
+    {
+      "kind": <sphere|box|torus|knot|panel|cone|cylinder|capsule|icosahedron|octahedron|disc>,
+      "color": <hex màu nằm trong palette đã chọn, vd "#f03248">,
+      "size": <0.4-1.8, hero lớn ~1.2-1.6>,
+      "x": <-2.5..2.5>,
+      "y": <-1.6..1.6>,
+      "z": <-1..1>
+    }
+  ]
 }
 
 VÍ DỤ JSON output:
-{"paletteId":"sunset-coral","compositionId":"solo-hero","materialMood":"glow-heavy","motionMood":"pulsing","title":"Đoá rực giữa lặng","textPhrase":"khẽ thở · sáng dần"}
+{"paletteId":"sunset-coral","compositionId":"solo-hero","materialMood":"glow-heavy","motionMood":"pulsing","title":"Đoá rực giữa lặng","textPhrase":"khẽ thở · sáng dần","shapeCount":7,"shapeBias":["torus","disc","sphere"],"harmonyRule":"hero-only","exotic":"giant-solo","heroes":[{"kind":"torus","color":"#ff6b6b","size":1.6,"x":0,"y":0.2,"z":0}]}
 
 Quy tắc:
-- Đa dạng giữa các lần gọi; tránh trùng paletteId/compositionId trong "previous" (nếu có).
-- Polish: thay đổi nhẹ, giữ tinh thần; Remix: dám đổi palette + composition.
-- "title" tránh tiếng Anh; ưu tiên chất thơ ngắn gọn.`
+- Đa dạng giữa các lần gọi; tránh trùng paletteId/compositionId trong "previous".
+- Polish: thay đổi nhẹ, giữ tinh thần; ít heroes, có thể bỏ exotic.
+- Remix: dám đổi palette + composition + dùng exotic + 2-3 heroes.
+- exotic chỉ chọn ~30% lần gọi (không lần nào cũng có).
+- "title" tiếng Việt, chất thơ.
+- "color" trong heroes BẮT BUỘC nằm trong các swatch của palette đã chọn.`
 }
 
 func buildUserPrompt(mode model.LLMMode, req model.LLMRequest) string {

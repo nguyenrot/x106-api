@@ -31,13 +31,16 @@ func Register(req model.RegisterRequest) (*model.User, error) {
 		return nil, err
 	}
 
+	// Production users.created_at / updated_at default to NULL (the table is
+	// shared with a legacy app), so we must set them explicitly — Scan into
+	// time.Time would otherwise fail later.
 	_, err = database.DB.Exec(
-		`INSERT INTO `+userTable+` (username, password_hash) VALUES (?, ?)`,
+		`INSERT INTO `+userTable+` (username, password_hash, created_at, updated_at) VALUES (?, ?, NOW(), NOW())`,
 		req.Username, string(hash),
 	)
 	if err != nil {
 		_, err = database.DB.Exec(
-			`INSERT INTO `+userTable+` (id, username, password_hash) VALUES (?, ?, ?)`,
+			`INSERT INTO `+userTable+` (id, username, password_hash, created_at, updated_at) VALUES (?, ?, ?, NOW(), NOW())`,
 			newID(), req.Username, string(hash),
 		)
 	}
@@ -66,7 +69,8 @@ func Login(req model.LoginRequest) (*model.User, error) {
 func GetUserByID(userID string) (*model.User, error) {
 	user := &model.User{}
 	err := database.DB.QueryRow(
-		`SELECT id, username, display_name, avatar_url, created_at, updated_at
+		`SELECT id, username, display_name, avatar_url,
+		        COALESCE(created_at, NOW()), COALESCE(updated_at, NOW())
 		 FROM `+userTable+` WHERE id = ?`,
 		userID,
 	).Scan(&user.ID, &user.Username, &user.DisplayName, &user.AvatarURL, &user.CreatedAt, &user.UpdatedAt)
@@ -82,7 +86,8 @@ func GetUserByID(userID string) (*model.User, error) {
 func findByUsername(username string) (*model.User, error) {
 	user := &model.User{}
 	err := database.DB.QueryRow(
-		`SELECT id, username, password_hash, display_name, avatar_url, created_at, updated_at
+		`SELECT id, username, password_hash, display_name, avatar_url,
+		        COALESCE(created_at, NOW()), COALESCE(updated_at, NOW())
 		 FROM `+userTable+` WHERE username = ?`,
 		username,
 	).Scan(&user.ID, &user.Username, &user.PasswordHash, &user.DisplayName, &user.AvatarURL, &user.CreatedAt, &user.UpdatedAt)
