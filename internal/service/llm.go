@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"strings"
 	"time"
@@ -184,8 +185,11 @@ func doDeepSeekCall(ctx context.Context, cfg *config.Config, systemPrompt, userP
 			{Role: "user", Content: userPrompt},
 		},
 		ResponseFormat: map[string]string{"type": "json_object"},
-		MaxTokens:      256,
-		Temperature:    temperature,
+		// v4-flash is a reasoning model — most output tokens are spent on
+		// internal reasoning, so the budget must be generous to leave room
+		// for the JSON answer itself.
+		MaxTokens:   2048,
+		Temperature: temperature,
 	}
 	buf, err := json.Marshal(body)
 	if err != nil {
@@ -204,34 +208,50 @@ func doDeepSeekCall(ctx context.Context, cfg *config.Config, systemPrompt, userP
 		if errors.Is(err, context.DeadlineExceeded) {
 			return model.LLMDirection{}, ErrLLMTimeout
 		}
+		log.Printf("[llm] http error: %v", err)
 		return model.LLMDirection{}, fmt.Errorf("%w: %v", ErrLLMUpstream, err)
 	}
 	defer resp.Body.Close()
 
 	raw, _ := io.ReadAll(resp.Body)
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return model.LLMDirection{}, fmt.Errorf("%w: status=%d body=%s", ErrLLMUpstream, resp.StatusCode, string(raw))
+		log.Printf("[llm] upstream %d: %s", resp.StatusCode, truncateForLog(raw))
+		return model.LLMDirection{}, fmt.Errorf("%w: status=%d", ErrLLMUpstream, resp.StatusCode)
 	}
 
 	var ds deepseekResponse
 	if err := json.Unmarshal(raw, &ds); err != nil {
+		log.Printf("[llm] parse top-level: %v body=%s", err, truncateForLog(raw))
 		return model.LLMDirection{}, fmt.Errorf("%w: parse: %v", ErrLLMUpstream, err)
 	}
 	if ds.Error != nil {
+		log.Printf("[llm] upstream error: %s", ds.Error.Message)
 		return model.LLMDirection{}, fmt.Errorf("%w: %s", ErrLLMUpstream, ds.Error.Message)
 	}
 	if len(ds.Choices) == 0 || strings.TrimSpace(ds.Choices[0].Message.Content) == "" {
+		log.Printf("[llm] empty content: %s", truncateForLog(raw))
 		return model.LLMDirection{}, fmt.Errorf("%w: empty content", ErrLLMUpstream)
 	}
 
+	content := ds.Choices[0].Message.Content
 	var dir model.LLMDirection
-	if err := json.Unmarshal([]byte(ds.Choices[0].Message.Content), &dir); err != nil {
+	if err := json.Unmarshal([]byte(content), &dir); err != nil {
+		log.Printf("[llm] invalid direction json: %v content=%s", err, truncateForLog([]byte(content)))
 		return model.LLMDirection{}, fmt.Errorf("%w: invalid direction json: %v", ErrLLMUpstream, err)
 	}
 	if err := validateAndClampDirection(&dir); err != nil {
+		log.Printf("[llm] direction validation failed: %v content=%s", err, truncateForLog([]byte(content)))
 		return model.LLMDirection{}, fmt.Errorf("%w: %v", ErrLLMUpstream, err)
 	}
 	return dir, nil
+}
+
+func truncateForLog(b []byte) string {
+	const max = 600
+	if len(b) <= max {
+		return string(b)
+	}
+	return string(b[:max]) + "…"
 }
 
 func validateAndClampDirection(d *model.LLMDirection) error {
