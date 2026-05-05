@@ -55,7 +55,7 @@ func (h *LLMHandler) generate(w http.ResponseWriter, r *http.Request, mode model
 		return
 	}
 
-	ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
+	ctx, cancel := context.WithTimeout(r.Context(), 25*time.Second)
 	defer cancel()
 
 	dir, used, remaining, err := service.GenerateLLMDirection(ctx, h.cfg, userID, mode, req)

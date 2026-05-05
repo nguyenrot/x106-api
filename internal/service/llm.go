@@ -156,7 +156,7 @@ type deepseekResponse struct {
 	} `json:"error,omitempty"`
 }
 
-var deepseekHTTPClient = &http.Client{Timeout: 12 * time.Second}
+var deepseekHTTPClient = &http.Client{Timeout: 28 * time.Second}
 
 func callDeepSeek(ctx context.Context, cfg *config.Config, mode model.LLMMode, req model.LLMRequest) (model.LLMDirection, error) {
 	systemPrompt := buildSystemPrompt()
