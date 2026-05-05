@@ -22,7 +22,8 @@ func NewLLMHandler(cfg *config.Config) *LLMHandler {
 
 func (h *LLMHandler) Quota(w http.ResponseWriter, r *http.Request) {
 	userID := GetUserID(r)
-	used, remaining, err := service.GetQuota(userID, h.cfg.LLMDailyLimit)
+	limit := service.EffectiveDailyLimit(h.cfg)
+	used, remaining, err := service.GetQuota(userID, limit)
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "internal error"})
 		return
@@ -30,7 +31,7 @@ func (h *LLMHandler) Quota(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, model.LLMQuotaResponse{
 		Used:      used,
 		Remaining: remaining,
-		Limit:     h.cfg.LLMDailyLimit,
+		Limit:     limit,
 	})
 }
 
@@ -64,13 +65,15 @@ func (h *LLMHandler) generate(w http.ResponseWriter, r *http.Request, mode model
 		case errors.Is(err, service.ErrQuotaExceeded):
 			writeJSON(w, http.StatusTooManyRequests, map[string]any{
 				"error":     "quota exceeded",
-				"limit":     h.cfg.LLMDailyLimit,
+				"limit":     service.EffectiveDailyLimit(h.cfg),
 				"remaining": 0,
 			})
 		case errors.Is(err, service.ErrLLMTimeout):
 			writeJSON(w, http.StatusGatewayTimeout, map[string]string{"error": "LLM timeout"})
 		case errors.Is(err, service.ErrLLMDisabled):
 			writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "AI mode not configured"})
+		case errors.Is(err, service.ErrLLMOff):
+			writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "AI mode disabled by admin"})
 		case errors.Is(err, service.ErrLLMUpstream):
 			writeJSON(w, http.StatusBadGateway, map[string]string{"error": "LLM upstream error"})
 		default:
@@ -83,6 +86,6 @@ func (h *LLMHandler) generate(w http.ResponseWriter, r *http.Request, mode model
 		Direction: dir,
 		Used:      used,
 		Remaining: remaining,
-		Limit:     h.cfg.LLMDailyLimit,
+		Limit:     service.EffectiveDailyLimit(h.cfg),
 	})
 }

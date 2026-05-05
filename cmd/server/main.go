@@ -34,6 +34,7 @@ func main() {
 	adminH := handler.NewAdminHandler(cfg)
 	artworkH := handler.NewArtworkHandler()
 	llmH := handler.NewLLMHandler(cfg)
+	adminArtH := handler.NewAdminArtHandler(cfg)
 
 	r := chi.NewRouter()
 
@@ -64,6 +65,19 @@ func main() {
 		r.Use(core.AdminAuth(cfg))
 		r.Get("/api/v1/admin/content/{app}", contentH.ListByApp)
 		r.Put("/api/v1/admin/content/{app}/{section}", contentH.UpsertSection)
+
+		// Admin "art" management — DeepSeek prompt, quotas, settings
+		r.Route("/api/v1/admin/art", func(r chi.Router) {
+			r.Get("/users", adminArtH.ListUsers)
+			r.Put("/users/{id}/quota", adminArtH.SetUserQuota)
+			r.Post("/users/{id}/quota/adjust", adminArtH.AdjustUserQuota)
+			r.Delete("/users/{id}/quota", adminArtH.ResetUserQuota)
+			r.Get("/llm-prompt", adminArtH.GetPrompt)
+			r.Put("/llm-prompt", adminArtH.SetPrompt)
+			r.Get("/stats", adminArtH.Stats)
+			r.Get("/settings", adminArtH.GetSettings)
+			r.Put("/settings", adminArtH.SetSettings)
+		})
 	})
 
 	// ── Protected routes ──────────────────────

@@ -10,6 +10,7 @@ import (
 	"io"
 	"log"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
@@ -23,7 +24,30 @@ var (
 	ErrLLMUpstream   = errors.New("LLM upstream error")
 	ErrLLMTimeout    = errors.New("LLM upstream timeout")
 	ErrLLMDisabled   = errors.New("LLM not configured")
+	ErrLLMOff        = errors.New("LLM disabled by admin")
 )
+
+// EffectiveDailyLimit returns the runtime daily limit — settings table override
+// takes precedence over the env-based config default.
+func EffectiveDailyLimit(cfg *config.Config) int {
+	v, _ := GetSetting(SettingLLMDailyLimit)
+	if v != "" {
+		if n, err := strconv.Atoi(strings.TrimSpace(v)); err == nil && n > 0 {
+			return n
+		}
+	}
+	return cfg.LLMDailyLimit
+}
+
+// LLMEnabled returns false only if admin explicitly turned LLM off via setting.
+// Default is enabled.
+func LLMEnabled() bool {
+	v, _ := GetSetting(SettingLLMEnabled)
+	if strings.TrimSpace(v) == "off" {
+		return false
+	}
+	return true
+}
 
 // Whitelist used to validate LLM output and clamp it back to the studio's vocabulary.
 var (
@@ -115,8 +139,12 @@ func GenerateLLMDirection(
 	if cfg.DeepSeekAPIKey == "" {
 		return model.LLMDirection{}, 0, 0, ErrLLMDisabled
 	}
+	if !LLMEnabled() {
+		return model.LLMDirection{}, 0, 0, ErrLLMOff
+	}
 
-	_, remaining, err := GetQuota(userID, cfg.LLMDailyLimit)
+	limit := EffectiveDailyLimit(cfg)
+	_, remaining, err := GetQuota(userID, limit)
 	if err != nil {
 		return model.LLMDirection{}, 0, 0, err
 	}
@@ -133,7 +161,7 @@ func GenerateLLMDirection(
 	if err != nil {
 		return model.LLMDirection{}, 0, 0, err
 	}
-	r := cfg.LLMDailyLimit - newCount
+	r := limit - newCount
 	if r < 0 {
 		r = 0
 	}
@@ -362,6 +390,13 @@ func clampRunes(s string, max int) string {
 // ─── Prompt builders ─────────────────────────────────────────────────────
 
 func buildSystemPrompt() string {
+	if v, _ := GetSetting(SettingLLMSystemPrompt); strings.TrimSpace(v) != "" {
+		return v
+	}
+	return DefaultSystemPrompt()
+}
+
+func DefaultSystemPrompt() string {
 	return `Bạn là "art director" cho một studio nghệ thuật 3D minimal trên giấy (paper-tone aesthetic). Mỗi lần được gọi, bạn trả VỀ JSON đúng schema dưới đây để hướng dẫn engine sinh layout. Engine xử lý spacing/relax/animation — bạn chọn hướng thẩm mỹ + đặt 1-3 "hero shape" cốt lõi.
 
 OUTPUT: chỉ JSON object, không markdown, không lời dẫn. Schema:
