@@ -464,27 +464,29 @@ OUTPUT: chỉ JSON object, không markdown, không lời dẫn. Schema:
     {
       "kind": <sphere|box|torus|knot|panel|cone|cylinder|capsule|icosahedron|octahedron|disc>,
       "color": <hex màu nằm trong palette đã chọn, vd "#f03248">,
-      "size": <0.4-1.8, scale tổng thể của hero — chỉ dùng khi không cần bóp méo W/H/D riêng>,
-      "width": <0.3-4.0, override trục X riêng — vd 2.4 cho hình ngang dài>,
-      "height": <0.3-4.0, override trục Y riêng — vd 2.8 cho hình tháp đứng>,
-      "depth": <0.3-4.0, override trục Z riêng — vd 0.4 cho hình dẹt>,
+      "width": <BẮT BUỘC, 0.3-4.0, kích thước trục X — KHÔNG dùng giá trị 1.0 mặc định, hãy chọn có chủ đích>,
+      "height": <BẮT BUỘC, 0.3-4.0, kích thước trục Y — KHÔNG dùng giá trị 1.0 mặc định, hãy chọn có chủ đích>,
+      "depth": <BẮT BUỘC, 0.3-4.0, kích thước trục Z — KHÔNG dùng giá trị 1.0 mặc định, hãy chọn có chủ đích>,
       "x": <-2.5..2.5>,
       "y": <-1.6..1.6>,
       "z": <-1..1>
     }
   ],
-  "sizeRanges": { // optional, áp cho TẤT CẢ shape engine sinh (không phải hero). Dùng để lái thẩm mỹ tổng thể. Bỏ qua nếu muốn engine dùng mặc định.
-    "widthMin": <0.3-4.0>, "widthMax": <0.3-4.0>,
-    "heightMin": <0.3-4.0>, "heightMax": <0.3-4.0>,
-    "depthMin": <0.3-4.0>, "depthMax": <0.3-4.0>
+  "sizeRanges": { // BẮT BUỘC trả về, áp cho TẤT CẢ shape engine sinh (không phải hero). Bạn quyết toàn bộ phân phối kích thước scene.
+    "widthMin": <BẮT BUỘC, 0.3-4.0>, "widthMax": <BẮT BUỘC, 0.3-4.0>,
+    "heightMin": <BẮT BUỘC, 0.3-4.0>, "heightMax": <BẮT BUỘC, 0.3-4.0>,
+    "depthMin": <BẮT BUỘC, 0.3-4.0>, "depthMax": <BẮT BUỘC, 0.3-4.0>
   }
 }
 
-VÍ DỤ 1 (count vừa, hero bóp méo trục để tạo hình tháp):
+VÍ DỤ 1 (hero là cột tháp đứng, panel ngang phụ):
 {"paletteId":"sunset-coral","compositionId":"solo-hero","materialMood":"glow-heavy","motionMood":"pulsing","title":"Đoá rực giữa lặng","textPhrase":"khẽ thở · sáng dần","shapeCount":7,"shapeBias":["torus","disc","sphere"],"harmonyRule":"hero-only","exotic":"giant-solo","heroes":[{"kind":"cylinder","color":"#ff6b6b","width":0.9,"height":2.6,"depth":0.9,"x":0,"y":0.2,"z":0}],"sizeRanges":{"widthMin":0.6,"widthMax":1.4,"heightMin":0.5,"heightMax":1.6,"depthMin":0.5,"depthMax":1.2}}
 
-VÍ DỤ 2 (count cao, scene dày đặc, kích thước nhỏ đa dạng):
-{"paletteId":"ocean-mist","compositionId":"constellation","materialMood":"glow-heavy","motionMood":"drifting","title":"Vô số ánh","textPhrase":"thiên hà thì thầm","shapeCount":60,"shapeBias":["sphere","disc","icosahedron"],"harmonyRule":"gradient","exotic":"mono-glow","heroes":[],"sizeRanges":{"widthMin":0.4,"widthMax":1.1,"heightMin":0.4,"heightMax":1.1,"depthMin":0.4,"depthMax":1.1}}
+VÍ DỤ 2 (count cao, đĩa mỏng phẳng, hero là panel ngang dài):
+{"paletteId":"ocean-mist","compositionId":"constellation","materialMood":"glow-heavy","motionMood":"drifting","title":"Vô số ánh","textPhrase":"thiên hà thì thầm","shapeCount":60,"shapeBias":["sphere","disc","icosahedron"],"harmonyRule":"gradient","exotic":"mono-glow","heroes":[{"kind":"panel","color":"#0d6e8c","width":3.2,"height":0.6,"depth":0.4,"x":0,"y":-0.3,"z":0}],"sizeRanges":{"widthMin":0.4,"widthMax":1.1,"heightMin":0.4,"heightMax":1.1,"depthMin":0.3,"depthMax":0.5}}
+
+VÍ DỤ 3 (hero hình đĩa dẹt, scene loạn nhịp):
+{"paletteId":"mono-bold","compositionId":"vortex","materialMood":"metal-heavy","motionMood":"orbital","title":"Xoáy trầm","textPhrase":"vọng âm · vô định","shapeCount":24,"shapeBias":["box","panel","octahedron"],"harmonyRule":"alternate","heroes":[{"kind":"disc","color":"#101820","width":2.8,"height":2.8,"depth":0.3,"x":0,"y":0,"z":0}],"sizeRanges":{"widthMin":0.5,"widthMax":2.2,"heightMin":0.4,"heightMax":1.8,"depthMin":0.4,"depthMax":1.6}}
 
 Quy tắc:
 - Đa dạng giữa các lần gọi; tránh trùng paletteId/compositionId trong "previous".
@@ -494,8 +496,9 @@ Quy tắc:
 - KHÔNG dùng exotic "giant-solo" hoặc "deep-cluster" khi shapeCount > 20 — engine sẽ pad thêm shape làm lệch ý đồ exotic. Chỉ "mono-glow" tương thích với count cao.
 - "title" tiếng Việt, chất thơ.
 - "color" trong heroes BẮT BUỘC nằm trong các swatch của palette đã chọn.
-- LUÔN dùng width/height/depth riêng cho hero (không chỉ "size") để tạo silhouette có chủ đích — vd cột tháp height>>width, panel ngang width>>height, đĩa mỏng depth nhỏ.
-- LUÔN trả "sizeRanges" để engine biết bóp méo ra sao cho shape phụ; nếu muốn đồng đều thì cho min≈max, nếu muốn loạn nhịp thì cho khoảng rộng.`
+- KÍCH THƯỚC (CỰC KỲ QUAN TRỌNG): bạn là người DUY NHẤT quyết định kích thước. NGHIÊM CẤM mọi giá trị mặc định 1.0, 1, hay W=H=D đồng đều thiếu chủ đích. MỖI hero PHẢI có 3 trục width/height/depth khác nhau hoặc tỉ lệ rõ rệt (cột tháp height ≥ 2× width; panel ngang width ≥ 2× height; đĩa dẹt depth ≤ 0.5; cầu cân đối thì width≈height≈depth nhưng phải ở giá trị có chủ đích như 1.6 hoặc 2.4, KHÔNG phải 1.0).
+- "sizeRanges" BẮT BUỘC LUÔN trả về với đủ 6 field min/max. Mood của bạn lái distribution: scene tĩnh đồng đều thì min≈max nhưng KHÔNG phải 1.0; scene loạn nhịp thì khoảng rộng (vd width 0.4→2.4). Mỗi trục có thể có range khác nhau để tạo silhouette tổng thể (vd height range hẹp + width range rộng = scene "trải ngang").
+- Đa dạng giữa các lần gọi cũng áp cho kích thước: tránh lặp lại cùng range của lần trước.`
 }
 
 func buildUserPrompt(mode model.LLMMode, req model.LLMRequest) string {
