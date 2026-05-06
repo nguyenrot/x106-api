@@ -48,14 +48,16 @@ type ArtPromptUpdateRequest struct {
 }
 
 type ArtSettingsResponse struct {
-	DailyLimit int  `json:"dailyLimit"`
-	Enabled    bool `json:"enabled"`
-	Configured bool `json:"configured"`
-	Model      string `json:"model"`
-	BaseURL    string `json:"baseUrl"`
+	DailyLimit int      `json:"dailyLimit"`
+	Enabled    bool     `json:"enabled"`
+	Configured bool     `json:"configured"`
+	Model      string   `json:"model"`
+	Models     []string `json:"models"`
+	BaseURL    string   `json:"baseUrl"`
 }
 
 type ArtSettingsUpdateRequest struct {
-	DailyLimit *int  `json:"dailyLimit,omitempty"`
-	Enabled    *bool `json:"enabled,omitempty"`
+	DailyLimit *int    `json:"dailyLimit,omitempty"`
+	Enabled    *bool   `json:"enabled,omitempty"`
+	Model      *string `json:"model,omitempty"`
 }

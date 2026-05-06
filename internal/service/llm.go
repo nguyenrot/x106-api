@@ -248,7 +248,7 @@ func directionHasSizing(d model.LLMDirection) bool {
 
 func doDeepSeekCall(ctx context.Context, cfg *config.Config, systemPrompt, userPrompt string, temperature float64) (model.LLMDirection, error) {
 	body := deepseekRequest{
-		Model: cfg.DeepSeekModel,
+		Model: EffectiveModel(cfg),
 		Messages: []deepseekMessage{
 			{Role: "system", Content: systemPrompt},
 			{Role: "user", Content: userPrompt},

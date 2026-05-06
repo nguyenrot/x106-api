@@ -166,7 +166,8 @@ func (h *AdminArtHandler) GetSettings(w http.ResponseWriter, r *http.Request) {
 		DailyLimit: service.EffectiveDailyLimit(h.cfg),
 		Enabled:    service.LLMEnabled(),
 		Configured: h.cfg.DeepSeekAPIKey != "",
-		Model:      h.cfg.DeepSeekModel,
+		Model:      service.EffectiveModel(h.cfg),
+		Models:     service.AllowedLLMModels,
 		BaseURL:    h.cfg.DeepSeekBaseURL,
 	})
 }
@@ -198,6 +199,19 @@ func (h *AdminArtHandler) SetSettings(w http.ResponseWriter, r *http.Request) {
 			val = "off"
 		}
 		if err := service.SetSetting(service.SettingLLMEnabled, val); err != nil {
+			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+			return
+		}
+	}
+	if req.Model != nil {
+		m := *req.Model
+		if !service.IsAllowedLLMModel(m) {
+			writeJSON(w, http.StatusBadRequest, map[string]string{
+				"error": "model must be one of: " + strings.Join(service.AllowedLLMModels, ", "),
+			})
+			return
+		}
+		if err := service.SetSetting(service.SettingLLMModel, m); err != nil {
 			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
 			return
 		}
