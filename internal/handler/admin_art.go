@@ -218,3 +218,52 @@ func (h *AdminArtHandler) SetSettings(w http.ResponseWriter, r *http.Request) {
 	}
 	h.GetSettings(w, r)
 }
+
+// GET /api/v1/admin/art/logs?limit=&offset=&user_id=&mode=&status=
+func (h *AdminArtHandler) ListLogs(w http.ResponseWriter, r *http.Request) {
+	q := r.URL.Query()
+	limit, _ := strconv.Atoi(q.Get("limit"))
+	offset, _ := strconv.Atoi(q.Get("offset"))
+	items, total, err := service.ListLLMLogs(service.LLMLogQuery{
+		UserID: q.Get("user_id"),
+		Mode:   q.Get("mode"),
+		Status: q.Get("status"),
+		Limit:  limit,
+		Offset: offset,
+	})
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return
+	}
+	if limit <= 0 || limit > 200 {
+		limit = 50
+	}
+	if offset < 0 {
+		offset = 0
+	}
+	writeJSON(w, http.StatusOK, model.LLMRequestLogListResponse{
+		Items:  items,
+		Total:  total,
+		Limit:  limit,
+		Offset: offset,
+	})
+}
+
+// GET /api/v1/admin/art/logs/{id} — full row including request/response payloads.
+func (h *AdminArtHandler) GetLogDetail(w http.ResponseWriter, r *http.Request) {
+	id, err := strconv.ParseInt(chi.URLParam(r, "id"), 10, 64)
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid id"})
+		return
+	}
+	row, err := service.GetLLMLog(id)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return
+	}
+	if row == nil {
+		writeJSON(w, http.StatusNotFound, map[string]string{"error": "not found"})
+		return
+	}
+	writeJSON(w, http.StatusOK, row)
+}

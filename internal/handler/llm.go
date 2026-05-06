@@ -41,6 +41,7 @@ func (h *LLMHandler) Remix(w http.ResponseWriter, r *http.Request)  { h.generate
 
 func (h *LLMHandler) generate(w http.ResponseWriter, r *http.Request, mode model.LLMMode) {
 	userID := GetUserID(r)
+	username := GetUsername(r)
 
 	var req model.LLMRequest
 	if r.ContentLength > 0 {
@@ -59,7 +60,7 @@ func (h *LLMHandler) generate(w http.ResponseWriter, r *http.Request, mode model
 	ctx, cancel := context.WithTimeout(r.Context(), 25*time.Second)
 	defer cancel()
 
-	dir, used, remaining, err := service.GenerateLLMDirection(ctx, h.cfg, userID, mode, req)
+	dir, used, remaining, err := service.GenerateLLMDirection(ctx, h.cfg, userID, username, mode, req)
 	if err != nil {
 		switch {
 		case errors.Is(err, service.ErrQuotaExceeded):

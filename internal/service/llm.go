@@ -133,6 +133,7 @@ func GenerateLLMDirection(
 	ctx context.Context,
 	cfg *config.Config,
 	userID string,
+	username string,
 	mode model.LLMMode,
 	req model.LLMRequest,
 ) (model.LLMDirection, int, int, error) {
@@ -152,7 +153,7 @@ func GenerateLLMDirection(
 		return model.LLMDirection{}, 0, 0, ErrQuotaExceeded
 	}
 
-	dir, err := callDeepSeek(ctx, cfg, mode, req)
+	dir, err := callDeepSeek(ctx, cfg, userID, username, mode, req)
 	if err != nil {
 		return model.LLMDirection{}, 0, 0, err
 	}
@@ -187,8 +188,15 @@ type deepseekChoice struct {
 	Message deepseekMessage `json:"message"`
 }
 
+type deepseekUsage struct {
+	PromptTokens     int `json:"prompt_tokens"`
+	CompletionTokens int `json:"completion_tokens"`
+	TotalTokens      int `json:"total_tokens"`
+}
+
 type deepseekResponse struct {
 	Choices []deepseekChoice `json:"choices"`
+	Usage   deepseekUsage    `json:"usage"`
 	Error   *struct {
 		Message string `json:"message"`
 		Type    string `json:"type"`
@@ -197,11 +205,11 @@ type deepseekResponse struct {
 
 var deepseekHTTPClient = &http.Client{Timeout: 28 * time.Second}
 
-func callDeepSeek(ctx context.Context, cfg *config.Config, mode model.LLMMode, req model.LLMRequest) (model.LLMDirection, error) {
+func callDeepSeek(ctx context.Context, cfg *config.Config, userID, username string, mode model.LLMMode, req model.LLMRequest) (model.LLMDirection, error) {
 	systemPrompt := buildSystemPrompt()
 	userPrompt := buildUserPrompt(mode, req)
 
-	dir, err := doDeepSeekCall(ctx, cfg, systemPrompt, userPrompt, 0.9)
+	dir, err := doDeepSeekCall(ctx, cfg, userID, username, mode, 1, systemPrompt, userPrompt, 0.9)
 	if err == nil && directionHasSizing(dir) {
 		fillHeroSizeDefaults(&dir)
 		return dir, nil
@@ -211,7 +219,7 @@ func callDeepSeek(ctx context.Context, cfg *config.Config, mode model.LLMMode, r
 	// the whole "AI decides everything" contract — so treat it as a soft fail.
 	if err == nil || errors.Is(err, ErrLLMUpstream) {
 		retryUser := userPrompt + "\n\nReturn STRICT JSON ONLY, no prose, no markdown. \"sizeRanges\" with all 6 fields and per-axis width/height/depth on every hero are MANDATORY — your previous response missed them."
-		dir2, err2 := doDeepSeekCall(ctx, cfg, systemPrompt, retryUser, 0.5)
+		dir2, err2 := doDeepSeekCall(ctx, cfg, userID, username, mode, 2, systemPrompt, retryUser, 0.5)
 		if err2 == nil {
 			fillHeroSizeDefaults(&dir2)
 			return dir2, nil
@@ -246,27 +254,58 @@ func directionHasSizing(d model.LLMDirection) bool {
 	return true
 }
 
-func doDeepSeekCall(ctx context.Context, cfg *config.Config, systemPrompt, userPrompt string, temperature float64) (model.LLMDirection, error) {
+func doDeepSeekCall(
+	ctx context.Context,
+	cfg *config.Config,
+	userID, username string,
+	mode model.LLMMode,
+	attempt int,
+	systemPrompt, userPrompt string,
+	temperature float64,
+) (model.LLMDirection, error) {
+	resolvedModel := EffectiveModel(cfg)
 	body := deepseekRequest{
-		Model: EffectiveModel(cfg),
+		Model: resolvedModel,
 		Messages: []deepseekMessage{
 			{Role: "system", Content: systemPrompt},
 			{Role: "user", Content: userPrompt},
 		},
 		ResponseFormat: map[string]string{"type": "json_object"},
-		// v4-flash is a reasoning model — most output tokens are spent on
-		// internal reasoning, so the budget must be generous to leave room
+		// v4-flash/v4-pro are reasoning models — most output tokens are spent
+		// on internal reasoning, so the budget must be generous to leave room
 		// for the JSON answer itself.
 		MaxTokens:   2048,
 		Temperature: temperature,
 	}
-	buf, err := json.Marshal(body)
-	if err != nil {
-		return model.LLMDirection{}, err
+	buf, _ := json.Marshal(body)
+
+	// Logging plumbing. We accumulate all interesting fields then persist a
+	// single row at the end — success or failure. Persistence errors are
+	// swallowed; an LLM call must never fail because of admin telemetry.
+	logIn := LLMLogInput{
+		UserID:         userID,
+		Username:       username,
+		Mode:           string(mode),
+		Model:          resolvedModel,
+		Attempt:        attempt,
+		Temperature:    temperature,
+		RequestPayload: buf,
 	}
+	start := time.Now()
+	defer func() {
+		logIn.LatencyMs = int(time.Since(start) / time.Millisecond)
+		if logIn.Status == "" {
+			logIn.Status = "unknown"
+		}
+		if err := RecordLLMLog(logIn); err != nil {
+			log.Printf("[llm] record log failed: %v", err)
+		}
+	}()
 
 	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, cfg.DeepSeekBaseURL+"/chat/completions", bytes.NewReader(buf))
 	if err != nil {
+		logIn.Status = "request_build_error"
+		logIn.ErrorMessage = err.Error()
 		return model.LLMDirection{}, err
 	}
 	httpReq.Header.Set("Content-Type", "application/json")
@@ -275,30 +314,46 @@ func doDeepSeekCall(ctx context.Context, cfg *config.Config, systemPrompt, userP
 	resp, err := deepseekHTTPClient.Do(httpReq)
 	if err != nil {
 		if errors.Is(err, context.DeadlineExceeded) {
+			logIn.Status = "timeout"
+			logIn.ErrorMessage = err.Error()
 			return model.LLMDirection{}, ErrLLMTimeout
 		}
 		log.Printf("[llm] http error: %v", err)
+		logIn.Status = "http_error"
+		logIn.ErrorMessage = err.Error()
 		return model.LLMDirection{}, fmt.Errorf("%w: %v", ErrLLMUpstream, err)
 	}
 	defer resp.Body.Close()
 
 	raw, _ := io.ReadAll(resp.Body)
+	logIn.ResponseRaw = raw
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		log.Printf("[llm] upstream %d: %s", resp.StatusCode, truncateForLog(raw))
+		logIn.Status = fmt.Sprintf("upstream_%d", resp.StatusCode)
+		logIn.ErrorMessage = string(raw)
 		return model.LLMDirection{}, fmt.Errorf("%w: status=%d", ErrLLMUpstream, resp.StatusCode)
 	}
 
 	var ds deepseekResponse
 	if err := json.Unmarshal(raw, &ds); err != nil {
 		log.Printf("[llm] parse top-level: %v body=%s", err, truncateForLog(raw))
+		logIn.Status = "parse_error"
+		logIn.ErrorMessage = err.Error()
 		return model.LLMDirection{}, fmt.Errorf("%w: parse: %v", ErrLLMUpstream, err)
 	}
+	logIn.PromptTokens = ds.Usage.PromptTokens
+	logIn.CompletionTokens = ds.Usage.CompletionTokens
+	logIn.TotalTokens = ds.Usage.TotalTokens
+
 	if ds.Error != nil {
 		log.Printf("[llm] upstream error: %s", ds.Error.Message)
+		logIn.Status = "upstream_error"
+		logIn.ErrorMessage = ds.Error.Message
 		return model.LLMDirection{}, fmt.Errorf("%w: %s", ErrLLMUpstream, ds.Error.Message)
 	}
 	if len(ds.Choices) == 0 || strings.TrimSpace(ds.Choices[0].Message.Content) == "" {
 		log.Printf("[llm] empty content: %s", truncateForLog(raw))
+		logIn.Status = "empty_content"
 		return model.LLMDirection{}, fmt.Errorf("%w: empty content", ErrLLMUpstream)
 	}
 
@@ -306,18 +361,18 @@ func doDeepSeekCall(ctx context.Context, cfg *config.Config, systemPrompt, userP
 	var dir model.LLMDirection
 	if err := json.Unmarshal([]byte(content), &dir); err != nil {
 		log.Printf("[llm] invalid direction json: %v content=%s", err, truncateForLog([]byte(content)))
+		logIn.Status = "invalid_direction_json"
+		logIn.ErrorMessage = err.Error()
 		return model.LLMDirection{}, fmt.Errorf("%w: invalid direction json: %v", ErrLLMUpstream, err)
 	}
-	// Validation (whitelist + clamp) is split into two stages:
-	//   1. validateAndClampDirection — drops invalid kinds, clamps positions/sizes;
-	//      keeps Width/Height/Depth at 0 when AI didn't send them.
-	//   2. fillHeroSizeDefaults — fills missing per-axis fields from Size.
-	// The split lets callDeepSeek detect "AI dropped sizing fields" between
-	// the two and retry with a stronger reminder before defaults mask the gap.
 	if err := validateAndClampDirection(&dir); err != nil {
 		log.Printf("[llm] direction validation failed: %v content=%s", err, truncateForLog([]byte(content)))
+		logIn.Status = "validation_error"
+		logIn.ErrorMessage = err.Error()
 		return model.LLMDirection{}, fmt.Errorf("%w: %v", ErrLLMUpstream, err)
 	}
+	logIn.Status = "success"
+	logIn.ParsedDirection = &dir
 	return dir, nil
 }
 

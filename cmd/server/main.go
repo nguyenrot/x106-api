@@ -77,6 +77,8 @@ func main() {
 			r.Get("/stats", adminArtH.Stats)
 			r.Get("/settings", adminArtH.GetSettings)
 			r.Put("/settings", adminArtH.SetSettings)
+			r.Get("/logs", adminArtH.ListLogs)
+			r.Get("/logs/{id}", adminArtH.GetLogDetail)
 		})
 	})
 

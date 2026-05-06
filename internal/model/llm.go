@@ -83,3 +83,37 @@ type LLMQuotaResponse struct {
 	Remaining int `json:"remaining"`
 	Limit     int `json:"limit"`
 }
+
+// LLMRequestLog is the row returned by the admin list endpoint.
+// Heavy fields (request_payload/response_raw/parsed_direction) are excluded
+// here; fetch via the detail endpoint.
+type LLMRequestLog struct {
+	ID               int64   `json:"id"`
+	UserID           string  `json:"userId"`
+	Username         string  `json:"username"`
+	Mode             string  `json:"mode"`
+	Model            string  `json:"model"`
+	Attempt          int     `json:"attempt"`
+	Temperature      float64 `json:"temperature"`
+	Status           string  `json:"status"`
+	ErrorMessage     string  `json:"errorMessage,omitempty"`
+	LatencyMs        int     `json:"latencyMs"`
+	PromptTokens     int     `json:"promptTokens"`
+	CompletionTokens int     `json:"completionTokens"`
+	TotalTokens      int     `json:"totalTokens"`
+	CreatedAt        string  `json:"createdAt"`
+}
+
+type LLMRequestLogDetail struct {
+	LLMRequestLog
+	RequestPayload  string `json:"requestPayload,omitempty"`
+	ResponseRaw     string `json:"responseRaw,omitempty"`
+	ParsedDirection string `json:"parsedDirection,omitempty"`
+}
+
+type LLMRequestLogListResponse struct {
+	Items  []LLMRequestLog `json:"items"`
+	Total  int             `json:"total"`
+	Limit  int             `json:"limit"`
+	Offset int             `json:"offset"`
+}

@@ -135,6 +135,11 @@ func GetUserID(r *http.Request) string {
 	return id
 }
 
+func GetUsername(r *http.Request) string {
+	name, _ := r.Context().Value(middleware.UsernameKey).(string)
+	return name
+}
+
 func writeJSON(w http.ResponseWriter, status int, data interface{}) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
