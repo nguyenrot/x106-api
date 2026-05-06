@@ -57,7 +57,9 @@ func (h *LLMHandler) generate(w http.ResponseWriter, r *http.Request, mode model
 		return
 	}
 
-	ctx, cancel := context.WithTimeout(r.Context(), 25*time.Second)
+	// v4-pro reasoning chain often takes 25–40s; allow ~110s to cover one
+	// retry without losing the whole attempt to ctx expiry between calls.
+	ctx, cancel := context.WithTimeout(r.Context(), 110*time.Second)
 	defer cancel()
 
 	dir, used, remaining, err := service.GenerateLLMDirection(ctx, h.cfg, userID, username, mode, req)

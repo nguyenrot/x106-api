@@ -203,7 +203,10 @@ type deepseekResponse struct {
 	} `json:"error,omitempty"`
 }
 
-var deepseekHTTPClient = &http.Client{Timeout: 28 * time.Second}
+// 60s per HTTP call. v4-pro reasoning model occasionally needs 30–40s to
+// finalize the chain-of-thought before emitting JSON. Handler ctx (110s)
+// bounds total budget across both attempts.
+var deepseekHTTPClient = &http.Client{Timeout: 60 * time.Second}
 
 func callDeepSeek(ctx context.Context, cfg *config.Config, userID, username string, mode model.LLMMode, req model.LLMRequest) (model.LLMDirection, error) {
 	systemPrompt := buildSystemPrompt()
@@ -273,8 +276,9 @@ func doDeepSeekCall(
 		ResponseFormat: map[string]string{"type": "json_object"},
 		// v4-flash/v4-pro are reasoning models — most output tokens are spent
 		// on internal reasoning, so the budget must be generous to leave room
-		// for the JSON answer itself.
-		MaxTokens:   2048,
+		// for the JSON answer itself. v4-pro chain-of-thought is longer, so
+		// 4096 keeps tail risk of empty_content low without inflating cost.
+		MaxTokens:   4096,
 		Temperature: temperature,
 	}
 	buf, _ := json.Marshal(body)
@@ -325,8 +329,22 @@ func doDeepSeekCall(
 	}
 	defer resp.Body.Close()
 
-	raw, _ := io.ReadAll(resp.Body)
+	raw, readErr := io.ReadAll(resp.Body)
 	logIn.ResponseRaw = raw
+	if readErr != nil {
+		// Body stream interrupted — almost always ctx deadline mid-response,
+		// which previously got mis-classified as parse_error because the
+		// partial body wasn't valid JSON. Surface it as a real timeout.
+		if errors.Is(readErr, context.DeadlineExceeded) || errors.Is(readErr, context.Canceled) || ctx.Err() != nil {
+			logIn.Status = "timeout"
+			logIn.ErrorMessage = readErr.Error()
+			return model.LLMDirection{}, ErrLLMTimeout
+		}
+		log.Printf("[llm] body read error: %v", readErr)
+		logIn.Status = "body_read_error"
+		logIn.ErrorMessage = readErr.Error()
+		return model.LLMDirection{}, fmt.Errorf("%w: read body: %v", ErrLLMUpstream, readErr)
+	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		log.Printf("[llm] upstream %d: %s", resp.StatusCode, truncateForLog(raw))
 		logIn.Status = fmt.Sprintf("upstream_%d", resp.StatusCode)
