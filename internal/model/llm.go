@@ -33,12 +33,27 @@ type LLMRequest struct {
 }
 
 type LLMHeroShape struct {
-	Kind  string  `json:"kind"`
-	Color string  `json:"color"`
-	Size  float64 `json:"size,omitempty"`
-	X     float64 `json:"x"`
-	Y     float64 `json:"y"`
-	Z     float64 `json:"z,omitempty"`
+	Kind   string  `json:"kind"`
+	Color  string  `json:"color"`
+	Size   float64 `json:"size,omitempty"`
+	Width  float64 `json:"width,omitempty"`
+	Height float64 `json:"height,omitempty"`
+	Depth  float64 `json:"depth,omitempty"`
+	X      float64 `json:"x"`
+	Y      float64 `json:"y"`
+	Z      float64 `json:"z,omitempty"`
+}
+
+// LLMSizeRanges lets the director set per-axis W/H/D ranges for the
+// non-hero shapes the engine generates. Each axis is sampled uniformly
+// within [min, max]. Missing ranges fall back to engine defaults.
+type LLMSizeRanges struct {
+	WidthMin  float64 `json:"widthMin,omitempty"`
+	WidthMax  float64 `json:"widthMax,omitempty"`
+	HeightMin float64 `json:"heightMin,omitempty"`
+	HeightMax float64 `json:"heightMax,omitempty"`
+	DepthMin  float64 `json:"depthMin,omitempty"`
+	DepthMax  float64 `json:"depthMax,omitempty"`
 }
 
 type LLMDirection struct {
@@ -53,6 +68,7 @@ type LLMDirection struct {
 	HarmonyRule   string         `json:"harmonyRule,omitempty"`
 	Exotic        string         `json:"exotic,omitempty"`
 	Heroes        []LLMHeroShape `json:"heroes,omitempty"`
+	SizeRanges    *LLMSizeRanges `json:"sizeRanges,omitempty"`
 }
 
 type LLMResponse struct {

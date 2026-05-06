@@ -344,7 +344,7 @@ func validateAndClampDirection(d *model.LLMDirection) error {
 		d.Exotic = ""
 	}
 
-	// heroes: cap to 3, validate kind, clamp positions
+	// heroes: cap to 3, validate kind, clamp positions and per-axis W/H/D
 	if len(d.Heroes) > 0 {
 		if len(d.Heroes) > 3 {
 			d.Heroes = d.Heroes[:3]
@@ -358,12 +358,59 @@ func validateAndClampDirection(d *model.LLMDirection) error {
 				h.Size = 1.0
 			}
 			h.Size = clampFloat(h.Size, 0.4, 1.8)
+			// Per-axis dimensions: AI may specify width/height/depth to break
+			// the [1,1,1] uniform default. If any axis is unset (<=0), fall
+			// back to Size for that axis so legacy responses stay valid.
+			if h.Width <= 0 {
+				h.Width = h.Size
+			}
+			if h.Height <= 0 {
+				h.Height = h.Size
+			}
+			if h.Depth <= 0 {
+				h.Depth = h.Size
+			}
+			h.Width = clampFloat(h.Width, 0.3, 4.0)
+			h.Height = clampFloat(h.Height, 0.3, 4.0)
+			h.Depth = clampFloat(h.Depth, 0.3, 4.0)
 			h.X = clampFloat(h.X, -2.5, 2.5)
 			h.Y = clampFloat(h.Y, -1.6, 1.6)
 			h.Z = clampFloat(h.Z, -1.0, 1.0)
 			filtered = append(filtered, h)
 		}
 		d.Heroes = filtered
+	}
+
+	// sizeRanges: per-axis [min, max] applied to engine-generated (non-hero)
+	// shapes. If only min or max is set, mirror to the other side. Range is
+	// auto-swapped if AI sent min>max. Drop the field entirely if invalid.
+	if d.SizeRanges != nil {
+		sr := d.SizeRanges
+		clampAxis := func(lo, hi *float64) {
+			if *lo <= 0 && *hi <= 0 {
+				return
+			}
+			if *lo <= 0 {
+				*lo = *hi
+			}
+			if *hi <= 0 {
+				*hi = *lo
+			}
+			if *lo > *hi {
+				*lo, *hi = *hi, *lo
+			}
+			*lo = clampFloat(*lo, 0.3, 4.0)
+			*hi = clampFloat(*hi, 0.3, 4.0)
+		}
+		clampAxis(&sr.WidthMin, &sr.WidthMax)
+		clampAxis(&sr.HeightMin, &sr.HeightMax)
+		clampAxis(&sr.DepthMin, &sr.DepthMax)
+		// If everything is zero, drop the struct so the engine uses defaults.
+		if sr.WidthMin == 0 && sr.WidthMax == 0 &&
+			sr.HeightMin == 0 && sr.HeightMax == 0 &&
+			sr.DepthMin == 0 && sr.DepthMax == 0 {
+			d.SizeRanges = nil
+		}
 	}
 	return nil
 }
@@ -417,19 +464,27 @@ OUTPUT: chỉ JSON object, không markdown, không lời dẫn. Schema:
     {
       "kind": <sphere|box|torus|knot|panel|cone|cylinder|capsule|icosahedron|octahedron|disc>,
       "color": <hex màu nằm trong palette đã chọn, vd "#f03248">,
-      "size": <0.4-1.8, hero lớn ~1.2-1.6>,
+      "size": <0.4-1.8, scale tổng thể của hero — chỉ dùng khi không cần bóp méo W/H/D riêng>,
+      "width": <0.3-4.0, override trục X riêng — vd 2.4 cho hình ngang dài>,
+      "height": <0.3-4.0, override trục Y riêng — vd 2.8 cho hình tháp đứng>,
+      "depth": <0.3-4.0, override trục Z riêng — vd 0.4 cho hình dẹt>,
       "x": <-2.5..2.5>,
       "y": <-1.6..1.6>,
       "z": <-1..1>
     }
-  ]
+  ],
+  "sizeRanges": { // optional, áp cho TẤT CẢ shape engine sinh (không phải hero). Dùng để lái thẩm mỹ tổng thể. Bỏ qua nếu muốn engine dùng mặc định.
+    "widthMin": <0.3-4.0>, "widthMax": <0.3-4.0>,
+    "heightMin": <0.3-4.0>, "heightMax": <0.3-4.0>,
+    "depthMin": <0.3-4.0>, "depthMax": <0.3-4.0>
+  }
 }
 
-VÍ DỤ 1 (count vừa, có exotic):
-{"paletteId":"sunset-coral","compositionId":"solo-hero","materialMood":"glow-heavy","motionMood":"pulsing","title":"Đoá rực giữa lặng","textPhrase":"khẽ thở · sáng dần","shapeCount":7,"shapeBias":["torus","disc","sphere"],"harmonyRule":"hero-only","exotic":"giant-solo","heroes":[{"kind":"torus","color":"#ff6b6b","size":1.6,"x":0,"y":0.2,"z":0}]}
+VÍ DỤ 1 (count vừa, hero bóp méo trục để tạo hình tháp):
+{"paletteId":"sunset-coral","compositionId":"solo-hero","materialMood":"glow-heavy","motionMood":"pulsing","title":"Đoá rực giữa lặng","textPhrase":"khẽ thở · sáng dần","shapeCount":7,"shapeBias":["torus","disc","sphere"],"harmonyRule":"hero-only","exotic":"giant-solo","heroes":[{"kind":"cylinder","color":"#ff6b6b","width":0.9,"height":2.6,"depth":0.9,"x":0,"y":0.2,"z":0}],"sizeRanges":{"widthMin":0.6,"widthMax":1.4,"heightMin":0.5,"heightMax":1.6,"depthMin":0.5,"depthMax":1.2}}
 
-VÍ DỤ 2 (count cao, scene dày đặc):
-{"paletteId":"ocean-mist","compositionId":"constellation","materialMood":"glow-heavy","motionMood":"drifting","title":"Vô số ánh","textPhrase":"thiên hà thì thầm","shapeCount":60,"shapeBias":["sphere","disc","icosahedron"],"harmonyRule":"gradient","exotic":"mono-glow","heroes":[]}
+VÍ DỤ 2 (count cao, scene dày đặc, kích thước nhỏ đa dạng):
+{"paletteId":"ocean-mist","compositionId":"constellation","materialMood":"glow-heavy","motionMood":"drifting","title":"Vô số ánh","textPhrase":"thiên hà thì thầm","shapeCount":60,"shapeBias":["sphere","disc","icosahedron"],"harmonyRule":"gradient","exotic":"mono-glow","heroes":[],"sizeRanges":{"widthMin":0.4,"widthMax":1.1,"heightMin":0.4,"heightMax":1.1,"depthMin":0.4,"depthMax":1.1}}
 
 Quy tắc:
 - Đa dạng giữa các lần gọi; tránh trùng paletteId/compositionId trong "previous".
@@ -438,7 +493,9 @@ Quy tắc:
 - exotic chỉ chọn ~30% lần gọi (không lần nào cũng có).
 - KHÔNG dùng exotic "giant-solo" hoặc "deep-cluster" khi shapeCount > 20 — engine sẽ pad thêm shape làm lệch ý đồ exotic. Chỉ "mono-glow" tương thích với count cao.
 - "title" tiếng Việt, chất thơ.
-- "color" trong heroes BẮT BUỘC nằm trong các swatch của palette đã chọn.`
+- "color" trong heroes BẮT BUỘC nằm trong các swatch của palette đã chọn.
+- LUÔN dùng width/height/depth riêng cho hero (không chỉ "size") để tạo silhouette có chủ đích — vd cột tháp height>>width, panel ngang width>>height, đĩa mỏng depth nhỏ.
+- LUÔN trả "sizeRanges" để engine biết bóp méo ra sao cho shape phụ; nếu muốn đồng đều thì cho min≈max, nếu muốn loạn nhịp thì cho khoảng rộng.`
 }
 
 func buildUserPrompt(mode model.LLMMode, req model.LLMRequest) string {
