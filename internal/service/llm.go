@@ -202,18 +202,48 @@ func callDeepSeek(ctx context.Context, cfg *config.Config, mode model.LLMMode, r
 	userPrompt := buildUserPrompt(mode, req)
 
 	dir, err := doDeepSeekCall(ctx, cfg, systemPrompt, userPrompt, 0.9)
-	if err == nil {
+	if err == nil && directionHasSizing(dir) {
+		fillHeroSizeDefaults(&dir)
 		return dir, nil
 	}
-	// Retry once with lower temperature on empty/invalid JSON (per DeepSeek docs caveat).
-	if errors.Is(err, ErrLLMUpstream) {
-		dir2, err2 := doDeepSeekCall(ctx, cfg, systemPrompt, userPrompt+"\n\nReturn STRICT JSON ONLY, no prose, no markdown.", 0.5)
+	// Retry once if upstream errored OR LLM dropped sizeRanges/hero W·H·D.
+	// Without sizing fields the engine falls back to non-AI defaults, defeating
+	// the whole "AI decides everything" contract — so treat it as a soft fail.
+	if err == nil || errors.Is(err, ErrLLMUpstream) {
+		retryUser := userPrompt + "\n\nReturn STRICT JSON ONLY, no prose, no markdown. \"sizeRanges\" with all 6 fields and per-axis width/height/depth on every hero are MANDATORY — your previous response missed them."
+		dir2, err2 := doDeepSeekCall(ctx, cfg, systemPrompt, retryUser, 0.5)
 		if err2 == nil {
+			fillHeroSizeDefaults(&dir2)
 			return dir2, nil
+		}
+		// If retry failed but first call succeeded, return first result —
+		// engine pad falls back to composition-aware sizing.
+		if err == nil {
+			fillHeroSizeDefaults(&dir)
+			return dir, nil
 		}
 		return model.LLMDirection{}, err2
 	}
 	return model.LLMDirection{}, err
+}
+
+// directionHasSizing reports whether the LLM populated the sizing fields the
+// "AI decides everything" contract requires: sizeRanges with at least one
+// axis range set, AND any heroes carry per-axis W/H/D (not just scalar size).
+func directionHasSizing(d model.LLMDirection) bool {
+	if d.SizeRanges == nil {
+		return false
+	}
+	sr := d.SizeRanges
+	if sr.WidthMax == 0 && sr.HeightMax == 0 && sr.DepthMax == 0 {
+		return false
+	}
+	for _, h := range d.Heroes {
+		if h.Width == 0 && h.Height == 0 && h.Depth == 0 {
+			return false
+		}
+	}
+	return true
 }
 
 func doDeepSeekCall(ctx context.Context, cfg *config.Config, systemPrompt, userPrompt string, temperature float64) (model.LLMDirection, error) {
@@ -278,11 +308,38 @@ func doDeepSeekCall(ctx context.Context, cfg *config.Config, systemPrompt, userP
 		log.Printf("[llm] invalid direction json: %v content=%s", err, truncateForLog([]byte(content)))
 		return model.LLMDirection{}, fmt.Errorf("%w: invalid direction json: %v", ErrLLMUpstream, err)
 	}
+	// Validation (whitelist + clamp) is split into two stages:
+	//   1. validateAndClampDirection — drops invalid kinds, clamps positions/sizes;
+	//      keeps Width/Height/Depth at 0 when AI didn't send them.
+	//   2. fillHeroSizeDefaults — fills missing per-axis fields from Size.
+	// The split lets callDeepSeek detect "AI dropped sizing fields" between
+	// the two and retry with a stronger reminder before defaults mask the gap.
 	if err := validateAndClampDirection(&dir); err != nil {
 		log.Printf("[llm] direction validation failed: %v content=%s", err, truncateForLog([]byte(content)))
 		return model.LLMDirection{}, fmt.Errorf("%w: %v", ErrLLMUpstream, err)
 	}
 	return dir, nil
+}
+
+// fillHeroSizeDefaults fills any per-axis hero W/H/D the LLM omitted by
+// falling back to the scalar Size. Run AFTER the retry decision in
+// callDeepSeek so directionHasSizing can detect the AI's actual omission.
+func fillHeroSizeDefaults(d *model.LLMDirection) {
+	for i := range d.Heroes {
+		h := &d.Heroes[i]
+		if h.Width <= 0 {
+			h.Width = h.Size
+		}
+		if h.Height <= 0 {
+			h.Height = h.Size
+		}
+		if h.Depth <= 0 {
+			h.Depth = h.Size
+		}
+		h.Width = clampFloat(h.Width, 0.3, 4.0)
+		h.Height = clampFloat(h.Height, 0.3, 4.0)
+		h.Depth = clampFloat(h.Depth, 0.3, 4.0)
+	}
 }
 
 func truncateForLog(b []byte) string {
@@ -358,21 +415,18 @@ func validateAndClampDirection(d *model.LLMDirection) error {
 				h.Size = 1.0
 			}
 			h.Size = clampFloat(h.Size, 0.4, 1.8)
-			// Per-axis dimensions: AI may specify width/height/depth to break
-			// the [1,1,1] uniform default. If any axis is unset (<=0), fall
-			// back to Size for that axis so legacy responses stay valid.
-			if h.Width <= 0 {
-				h.Width = h.Size
+			// Per-axis Width/Height/Depth: clamp positive values, leave 0s
+			// untouched so callDeepSeek can detect omission and retry.
+			// fillHeroSizeDefaults runs later to fall back to Size.
+			if h.Width > 0 {
+				h.Width = clampFloat(h.Width, 0.3, 4.0)
 			}
-			if h.Height <= 0 {
-				h.Height = h.Size
+			if h.Height > 0 {
+				h.Height = clampFloat(h.Height, 0.3, 4.0)
 			}
-			if h.Depth <= 0 {
-				h.Depth = h.Size
+			if h.Depth > 0 {
+				h.Depth = clampFloat(h.Depth, 0.3, 4.0)
 			}
-			h.Width = clampFloat(h.Width, 0.3, 4.0)
-			h.Height = clampFloat(h.Height, 0.3, 4.0)
-			h.Depth = clampFloat(h.Depth, 0.3, 4.0)
 			h.X = clampFloat(h.X, -2.5, 2.5)
 			h.Y = clampFloat(h.Y, -1.6, 1.6)
 			h.Z = clampFloat(h.Z, -1.0, 1.0)
