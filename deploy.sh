@@ -4,7 +4,8 @@ set -euo pipefail
 export PATH="/usr/local/go/bin:${PATH}"
 
 APP_DIR="/var/www/api"
-SERVICE_NAME="x106-api"
+API_SERVICE="x106-api"
+WORKER_SERVICE="x106-worker"
 HEALTH_URL="https://api.pkn.io.vn/api/v1/health"
 REF="${1:-origin/main}"
 
@@ -17,13 +18,26 @@ git reset --hard "$REF"
 
 go test ./...
 go build -o x106-api.new ./cmd/server
-chmod +x x106-api.new
+go build -o x106-worker.new ./cmd/worker
+chmod +x x106-api.new x106-worker.new
 mv x106-api.new x106-api
+mv x106-worker.new x106-worker
 
-systemctl restart "$SERVICE_NAME"
+systemctl restart "$API_SERVICE"
 sleep 2
-systemctl is-active --quiet "$SERVICE_NAME"
+systemctl is-active --quiet "$API_SERVICE"
 curl -fsSL "$HEALTH_URL" >/dev/null
+
+# Worker is optional during initial migration: if the unit isn't installed
+# yet, log it and continue rather than failing the whole deploy.
+if systemctl list-unit-files | grep -q "^${WORKER_SERVICE}.service"; then
+    systemctl restart "$WORKER_SERVICE"
+    sleep 1
+    systemctl is-active --quiet "$WORKER_SERVICE"
+    echo "[api] worker restarted"
+else
+    echo "[api] WARNING: ${WORKER_SERVICE}.service not installed — async LLM jobs will not be processed"
+fi
 
 git diff --quiet
 echo "[api] deploy done $(date '+%Y-%m-%d %H:%M:%S')"

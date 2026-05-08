@@ -105,12 +105,19 @@ func main() {
 			r.Delete("/{id}", artworkH.DeleteArtwork)
 		})
 
-		// art.pkn.io.vn — LLM director (DeepSeek), 5 calls/day/user
+		// art.pkn.io.vn — LLM director (DeepSeek), 5 calls/day/user.
+		// Sync endpoints (random/polish/remix) kept for migration window;
+		// production traffic should use the async /job pipeline so requests
+		// don't hit Cloudflare's 100s ceiling.
 		r.Route("/api/v1/studio/llm", func(r chi.Router) {
 			r.Get("/quota", llmH.Quota)
 			r.Post("/random", llmH.Random)
 			r.Post("/polish", llmH.Polish)
 			r.Post("/remix", llmH.Remix)
+
+			r.Post("/job", llmH.Submit)
+			r.Get("/job/{id}", llmH.GetJob)
+			r.Post("/job/{id}/cancel", llmH.CancelJob)
 		})
 	})
 

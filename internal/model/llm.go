@@ -110,3 +110,42 @@ type LLMRequestLogListResponse struct {
 	Limit  int             `json:"limit"`
 	Offset int             `json:"offset"`
 }
+
+// ─── Async LLM jobs (queue) ──────────────────────────────────────────────
+//
+// Cloudflare's free-tier 100s proxy ceiling makes synchronous DeepSeek calls
+// flaky (v4-pro reasoning + retry can exceed the budget). The async path
+// submits a job, returns an id, then the client polls; the worker runs the
+// actual DeepSeek call on the VPS without going through Cloudflare.
+
+type LLMJobStatus string
+
+const (
+	LLMJobPending    LLMJobStatus = "pending"
+	LLMJobProcessing LLMJobStatus = "processing"
+	LLMJobDone       LLMJobStatus = "done"
+	LLMJobFailed     LLMJobStatus = "failed"
+	LLMJobCanceled   LLMJobStatus = "canceled"
+)
+
+type LLMJobSubmitResponse struct {
+	JobID     string `json:"jobId"`
+	Used      int    `json:"used"`
+	Remaining int    `json:"remaining"`
+	Limit     int    `json:"limit"`
+}
+
+// LLMJobStatusResponse is the polling payload. Scene only present when
+// status=done; ErrorMessage only when status=failed/canceled. Quota counters
+// are always returned so the client can keep its badge fresh.
+type LLMJobStatusResponse struct {
+	JobID        string       `json:"jobId"`
+	Status       LLMJobStatus `json:"status"`
+	Mode         LLMMode      `json:"mode"`
+	Scene        *LLMScene    `json:"scene,omitempty"`
+	ErrorMessage string       `json:"errorMessage,omitempty"`
+	ElapsedMs    int          `json:"elapsedMs"`
+	Used         int          `json:"used"`
+	Remaining    int          `json:"remaining"`
+	Limit        int          `json:"limit"`
+}

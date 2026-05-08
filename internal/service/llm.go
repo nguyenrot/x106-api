@@ -126,6 +126,60 @@ func incrementUsage(userID string) (newCount int, err error) {
 	return newCount, nil
 }
 
+// ReserveLLMQuota atomically charges a quota slot for an async job submission.
+// Returns ErrQuotaExceeded when the user is at limit. The async path uses this
+// at submit time so the user can't queue more jobs than their daily allowance.
+// On failure (worker error, cancel-while-pending), pair with RefundLLMQuota.
+//
+// Concurrent-submit race window: small and bounded by frontend's aiBusyRef +
+// daily 5-job ceiling — at worst a user could overshoot by 1 with hand-crafted
+// requests. Acceptable for this scale; no SELECT FOR UPDATE needed.
+func ReserveLLMQuota(userID string, limit int) (used, remaining int, err error) {
+	_, rem, err := GetQuota(userID, limit)
+	if err != nil {
+		return 0, 0, err
+	}
+	if rem <= 0 {
+		return limit, 0, ErrQuotaExceeded
+	}
+	newCount, err := incrementUsage(userID)
+	if err != nil {
+		return 0, 0, err
+	}
+	r := limit - newCount
+	if r < 0 {
+		r = 0
+	}
+	return newCount, r, nil
+}
+
+// RefundLLMQuota decrements today's usage counter. Used when an async job
+// fails (DeepSeek upstream/timeout/validation) or is canceled before the
+// worker started. GREATEST(count-1, 0) keeps the counter from going negative
+// even if refund is somehow called twice.
+func RefundLLMQuota(userID string) error {
+	today := todayLocal()
+	_, err := database.DB.Exec(
+		`UPDATE llm_usage SET count = GREATEST(count - 1, 0)
+		 WHERE user_id = ? AND date = ?`,
+		userID, today,
+	)
+	return err
+}
+
+// RunLLMJob is the worker entry point: build prompts, call DeepSeek (with
+// internal retry), validate. Same code path as the synchronous handler but
+// without quota touching — the async submit already reserved a slot.
+func RunLLMJob(ctx context.Context, cfg *config.Config, userID, username string, mode model.LLMMode, req model.LLMRequest) (model.LLMScene, error) {
+	if cfg.DeepSeekAPIKey == "" {
+		return model.LLMScene{}, ErrLLMDisabled
+	}
+	if !LLMEnabled() {
+		return model.LLMScene{}, ErrLLMOff
+	}
+	return callDeepSeek(ctx, cfg, userID, username, mode, req)
+}
+
 // GenerateLLMScene: check quota → call DeepSeek (with retry) → validate → increment usage.
 // LLM authors the full LLMScene; backend just sanity-clamps.
 func GenerateLLMScene(
