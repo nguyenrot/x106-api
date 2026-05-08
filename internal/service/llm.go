@@ -202,9 +202,13 @@ type deepseekResponse struct {
 	} `json:"error,omitempty"`
 }
 
-// 60s per HTTP call covers v4-pro's typical 25–45s reasoning chain.
-// Handler ctx (110s) bounds total budget across both attempts.
-var deepseekHTTPClient = &http.Client{Timeout: 60 * time.Second}
+// 100s per HTTP call — matches Cloudflare Free tier's hard 100s proxy ceiling.
+// AI-first refactor pushed v4-pro reasoning + full-recipe output past the old
+// 60s budget for polish/remix (which process currentScene + author from
+// scratch). Handler ctx (110s) wraps this with margin for retry on fast-fail
+// (JSON parse), but not for retry-after-timeout — Cloudflare would have
+// already cut us off.
+var deepseekHTTPClient = &http.Client{Timeout: 100 * time.Second}
 
 func callDeepSeek(ctx context.Context, cfg *config.Config, userID, username string, mode model.LLMMode, req model.LLMRequest) (model.LLMScene, error) {
 	systemPrompt := buildSystemPrompt()
