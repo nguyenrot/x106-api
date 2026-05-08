@@ -29,8 +29,11 @@ systemctl is-active --quiet "$API_SERVICE"
 curl -fsSL "$HEALTH_URL" >/dev/null
 
 # Worker is optional during initial migration: if the unit isn't installed
-# yet, log it and continue rather than failing the whole deploy.
-if systemctl list-unit-files | grep -q "^${WORKER_SERVICE}.service"; then
+# yet, log it and continue rather than failing the whole deploy. We check the
+# file directly because `systemctl list-unit-files` over a non-TTY pipe drops
+# rows in some versions (Ubuntu 24.04 systemd 255), so a grep may miss a unit
+# that actually exists.
+if [ -f "/etc/systemd/system/${WORKER_SERVICE}.service" ]; then
     systemctl restart "$WORKER_SERVICE"
     sleep 1
     systemctl is-active --quiet "$WORKER_SERVICE"
