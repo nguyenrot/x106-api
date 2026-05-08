@@ -149,3 +149,37 @@ type LLMJobStatusResponse struct {
 	Remaining    int          `json:"remaining"`
 	Limit        int          `json:"limit"`
 }
+
+// ─── Admin queue views ───────────────────────────────────────────────────
+
+// LLMJobRow is one row in the admin job list. Heavy fields (request_body,
+// result_scene) are loaded only via the detail endpoint.
+type LLMJobRow struct {
+	ID           string       `json:"id"`
+	UserID       string       `json:"userId"`
+	Username     string       `json:"username"`
+	Mode         LLMMode      `json:"mode"`
+	Status       LLMJobStatus `json:"status"`
+	Attempt      int          `json:"attempt"`
+	ErrorMessage string       `json:"errorMessage,omitempty"`
+	RunMs        int          `json:"runMs"` // started_at→finished_at; 0 while in flight or pending
+	CreatedAt    string       `json:"createdAt"`
+	StartedAt    string       `json:"startedAt,omitempty"`
+	FinishedAt   string       `json:"finishedAt,omitempty"`
+}
+
+// LLMJobDetail returns the full row including the JSON columns as strings so
+// the admin UI can pretty-print them without re-validating against the live
+// schema (validation may have evolved since the row was written).
+type LLMJobDetail struct {
+	LLMJobRow
+	RequestBody string `json:"requestBody,omitempty"`
+	ResultScene string `json:"resultScene,omitempty"`
+}
+
+type LLMJobListResponse struct {
+	Items  []LLMJobRow `json:"items"`
+	Total  int         `json:"total"`
+	Limit  int         `json:"limit"`
+	Offset int         `json:"offset"`
+}

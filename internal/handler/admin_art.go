@@ -267,3 +267,56 @@ func (h *AdminArtHandler) GetLogDetail(w http.ResponseWriter, r *http.Request) {
 	}
 	writeJSON(w, http.StatusOK, row)
 }
+
+// GET /api/v1/admin/art/jobs?limit=&offset=&user_id=&mode=&status=
+//
+// Lists rows from the async LLM queue (llm_jobs). Distinct from /logs which
+// shows DeepSeek call attempts (llm_request_logs) — a single job may produce
+// 1-2 attempt rows, but the job row carries the user-visible flow state.
+func (h *AdminArtHandler) ListJobs(w http.ResponseWriter, r *http.Request) {
+	q := r.URL.Query()
+	limit, _ := strconv.Atoi(q.Get("limit"))
+	offset, _ := strconv.Atoi(q.Get("offset"))
+	items, total, err := service.ListLLMJobsAdmin(service.LLMJobAdminQuery{
+		UserID: q.Get("user_id"),
+		Mode:   q.Get("mode"),
+		Status: q.Get("status"),
+		Limit:  limit,
+		Offset: offset,
+	})
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return
+	}
+	if limit <= 0 || limit > 200 {
+		limit = 50
+	}
+	if offset < 0 {
+		offset = 0
+	}
+	writeJSON(w, http.StatusOK, model.LLMJobListResponse{
+		Items:  items,
+		Total:  total,
+		Limit:  limit,
+		Offset: offset,
+	})
+}
+
+// GET /api/v1/admin/art/jobs/{id} — full row including request_body + result_scene.
+func (h *AdminArtHandler) GetJobDetail(w http.ResponseWriter, r *http.Request) {
+	id := chi.URLParam(r, "id")
+	if id == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid id"})
+		return
+	}
+	row, err := service.GetLLMJobDetailAdmin(id)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return
+	}
+	if row == nil {
+		writeJSON(w, http.StatusNotFound, map[string]string{"error": "not found"})
+		return
+	}
+	writeJSON(w, http.StatusOK, row)
+}

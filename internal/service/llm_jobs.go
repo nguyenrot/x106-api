@@ -233,6 +233,151 @@ func RecoverStaleJobs(maxAge time.Duration) (int, error) {
 	return count, nil
 }
 
+// ─── Admin query API ─────────────────────────────────────────────────────
+
+// LLMJobAdminQuery filters an admin list of jobs. Empty fields mean "any".
+type LLMJobAdminQuery struct {
+	UserID string
+	Mode   string
+	Status string
+	Limit  int
+	Offset int
+}
+
+// ListLLMJobsAdmin returns a page of jobs matching the filter, newest first,
+// without the heavy JSON columns. Total is the unpaginated count.
+func ListLLMJobsAdmin(q LLMJobAdminQuery) ([]model.LLMJobRow, int, error) {
+	limit := q.Limit
+	if limit <= 0 || limit > 200 {
+		limit = 50
+	}
+	offset := q.Offset
+	if offset < 0 {
+		offset = 0
+	}
+
+	where := []string{"1=1"}
+	args := []any{}
+	if q.UserID != "" {
+		where = append(where, "user_id = ?")
+		args = append(args, q.UserID)
+	}
+	if q.Mode != "" {
+		where = append(where, "mode = ?")
+		args = append(args, q.Mode)
+	}
+	if q.Status != "" {
+		where = append(where, "status = ?")
+		args = append(args, q.Status)
+	}
+	clause := strings.Join(where, " AND ")
+
+	var total int
+	if err := database.DB.QueryRow(
+		"SELECT COUNT(*) FROM llm_jobs WHERE "+clause, args...,
+	).Scan(&total); err != nil {
+		return nil, 0, err
+	}
+
+	rows, err := database.DB.Query(
+		`SELECT id, user_id, username, mode, status, attempt, error_message,
+		        created_at, started_at, finished_at
+		 FROM llm_jobs WHERE `+clause+`
+		 ORDER BY created_at DESC LIMIT ? OFFSET ?`,
+		append(args, limit, offset)...,
+	)
+	if err != nil {
+		return nil, 0, err
+	}
+	defer rows.Close()
+
+	out := make([]model.LLMJobRow, 0, limit)
+	for rows.Next() {
+		var r model.LLMJobRow
+		var (
+			mode, status string
+			errMsg       sql.NullString
+			createdAt    time.Time
+			startedAt    sql.NullTime
+			finishedAt   sql.NullTime
+		)
+		if err := rows.Scan(
+			&r.ID, &r.UserID, &r.Username, &mode, &status,
+			&r.Attempt, &errMsg, &createdAt, &startedAt, &finishedAt,
+		); err != nil {
+			return nil, 0, err
+		}
+		r.Mode = model.LLMMode(mode)
+		r.Status = model.LLMJobStatus(status)
+		if errMsg.Valid {
+			r.ErrorMessage = errMsg.String
+		}
+		r.CreatedAt = createdAt.UTC().Format(time.RFC3339)
+		if startedAt.Valid {
+			r.StartedAt = startedAt.Time.UTC().Format(time.RFC3339)
+		}
+		if finishedAt.Valid {
+			r.FinishedAt = finishedAt.Time.UTC().Format(time.RFC3339)
+			if startedAt.Valid {
+				r.RunMs = int(finishedAt.Time.Sub(startedAt.Time) / time.Millisecond)
+			}
+		}
+		out = append(out, r)
+	}
+	return out, total, rows.Err()
+}
+
+// GetLLMJobDetailAdmin returns the full row including JSON columns as raw
+// strings. Returns nil when not found (no error).
+func GetLLMJobDetailAdmin(jobID string) (*model.LLMJobDetail, error) {
+	var d model.LLMJobDetail
+	var (
+		mode, status                       string
+		requestBody, resultScene, errMsg   sql.NullString
+		createdAt                          time.Time
+		startedAt, finishedAt              sql.NullTime
+	)
+	err := database.DB.QueryRow(
+		`SELECT id, user_id, username, mode, status, attempt, error_message,
+		        request_body, result_scene,
+		        created_at, started_at, finished_at
+		 FROM llm_jobs WHERE id = ?`,
+		jobID,
+	).Scan(
+		&d.ID, &d.UserID, &d.Username, &mode, &status, &d.Attempt, &errMsg,
+		&requestBody, &resultScene,
+		&createdAt, &startedAt, &finishedAt,
+	)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	d.Mode = model.LLMMode(mode)
+	d.Status = model.LLMJobStatus(status)
+	if errMsg.Valid {
+		d.ErrorMessage = errMsg.String
+	}
+	if requestBody.Valid {
+		d.RequestBody = requestBody.String
+	}
+	if resultScene.Valid {
+		d.ResultScene = resultScene.String
+	}
+	d.CreatedAt = createdAt.UTC().Format(time.RFC3339)
+	if startedAt.Valid {
+		d.StartedAt = startedAt.Time.UTC().Format(time.RFC3339)
+	}
+	if finishedAt.Valid {
+		d.FinishedAt = finishedAt.Time.UTC().Format(time.RFC3339)
+		if startedAt.Valid {
+			d.RunMs = int(finishedAt.Time.Sub(startedAt.Time) / time.Millisecond)
+		}
+	}
+	return &d, nil
+}
+
 // CleanupOldLLMJobs deletes terminal rows older than maxAge. Keeps the table
 // from growing without bound; logs/admin queries can use llm_request_logs
 // for historical detail.

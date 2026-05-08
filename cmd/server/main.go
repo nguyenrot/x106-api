@@ -79,6 +79,8 @@ func main() {
 			r.Put("/settings", adminArtH.SetSettings)
 			r.Get("/logs", adminArtH.ListLogs)
 			r.Get("/logs/{id}", adminArtH.GetLogDetail)
+			r.Get("/jobs", adminArtH.ListJobs)
+			r.Get("/jobs/{id}", adminArtH.GetJobDetail)
 		})
 	})
 
