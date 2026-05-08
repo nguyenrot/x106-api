@@ -52,8 +52,8 @@ func (h *LLMHandler) generate(w http.ResponseWriter, r *http.Request, mode model
 	}
 
 	// Polish/remix should usually have a scene context.
-	if mode != model.LLMModeRandom && req.Scene == nil {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "scene is required for polish/remix"})
+	if mode != model.LLMModeRandom && req.CurrentScene == nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "currentScene is required for polish/remix"})
 		return
 	}
 
@@ -62,7 +62,7 @@ func (h *LLMHandler) generate(w http.ResponseWriter, r *http.Request, mode model
 	ctx, cancel := context.WithTimeout(r.Context(), 110*time.Second)
 	defer cancel()
 
-	dir, used, remaining, err := service.GenerateLLMDirection(ctx, h.cfg, userID, username, mode, req)
+	scene, used, remaining, err := service.GenerateLLMScene(ctx, h.cfg, userID, username, mode, req)
 	if err != nil {
 		switch {
 		case errors.Is(err, service.ErrQuotaExceeded):
@@ -86,7 +86,7 @@ func (h *LLMHandler) generate(w http.ResponseWriter, r *http.Request, mode model
 	}
 
 	writeJSON(w, http.StatusOK, model.LLMResponse{
-		Direction: dir,
+		Scene:     scene,
 		Used:      used,
 		Remaining: remaining,
 		Limit:     service.EffectiveDailyLimit(h.cfg),

@@ -27,8 +27,6 @@ var (
 	ErrLLMOff        = errors.New("LLM disabled by admin")
 )
 
-// EffectiveDailyLimit returns the runtime daily limit — settings table override
-// takes precedence over the env-based config default.
 func EffectiveDailyLimit(cfg *config.Config) int {
 	v, _ := GetSetting(SettingLLMDailyLimit)
 	if v != "" {
@@ -39,8 +37,6 @@ func EffectiveDailyLimit(cfg *config.Config) int {
 	return cfg.LLMDailyLimit
 }
 
-// LLMEnabled returns false only if admin explicitly turned LLM off via setting.
-// Default is enabled.
 func LLMEnabled() bool {
 	v, _ := GetSetting(SettingLLMEnabled)
 	if strings.TrimSpace(v) == "off" {
@@ -49,7 +45,9 @@ func LLMEnabled() bool {
 	return true
 }
 
-// Whitelist used to validate LLM output and clamp it back to the studio's vocabulary.
+// Whitelists: only enums the renderer can actually handle. The LLM owns the
+// rest (positions, sizes, colors per shape) — no composition/harmony/exotic
+// vocabulary anymore; the prompt teaches layout as math.
 var (
 	llmPalettes = map[string]bool{
 		"poster-bright": true, "museum-pop": true, "soft-electric": true,
@@ -57,34 +55,34 @@ var (
 		"pastel-garden": true, "mono-bold": true, "tropical-punch": true,
 		"vintage-press": true,
 	}
-	llmCompositions = map[string]bool{
-		"row": true, "ring": true, "tower": true, "constellation": true,
-		"mirror": true, "solo-hero": true, "wave": true, "vortex": true,
-		"mandala": true, "cascade": true, "horizon": true, "petal": true,
-	}
-	llmMaterialMoods = map[string]bool{
-		"glow-heavy": true, "metal-heavy": true, "matte-heavy": true,
-		"glass-heavy": true, "balanced": true,
-	}
-	llmMotionMoods = map[string]bool{
-		"still": true, "drifting": true, "spinning": true,
-		"pulsing": true, "orbital": true,
-	}
 	llmShapeKinds = map[string]bool{
 		"sphere": true, "box": true, "torus": true, "knot": true,
 		"panel": true, "cone": true, "cylinder": true, "capsule": true,
 		"icosahedron": true, "octahedron": true, "disc": true,
 	}
-	llmHarmonyRules = map[string]bool{
-		"alternate": true, "gradient": true, "hero-only": true, "spectrum": true,
+	llmMaterials = map[string]bool{
+		"matte": true, "glass": true, "metal": true, "glow": true,
 	}
-	llmExotics = map[string]bool{
-		"mono-glow": true, "giant-solo": true, "deep-cluster": true,
+	llmMotions = map[string]bool{
+		"still": true, "float": true, "spin": true, "orbit": true, "pulse": true,
+	}
+	llmFonts = map[string]bool{
+		"sans": true, "serif": true, "round": true, "square": true,
+	}
+	llmTextAligns = map[string]bool{
+		"left": true, "center": true, "right": true,
 	}
 )
 
-const llmTitleMaxRunes = 40
-const llmTextPhraseMaxRunes = 60
+const (
+	llmTitleMaxRunes   = 40
+	llmAINotesMaxRunes = 200
+	llmTextMaxRunes    = 120
+	llmSceneVersion    = 3
+	llmShapeMaxCount   = 16
+	llmShapeMinCount   = 1
+	llmTextMaxCount    = 4
+)
 
 // GetQuota returns today's used count, remaining, and configured limit for a user.
 func GetQuota(userID string, limit int) (used, remaining int, err error) {
@@ -128,45 +126,46 @@ func incrementUsage(userID string) (newCount int, err error) {
 	return newCount, nil
 }
 
-// GenerateLLMDirection: check quota → call DeepSeek → validate → increment usage on success.
-func GenerateLLMDirection(
+// GenerateLLMScene: check quota → call DeepSeek (with retry) → validate → increment usage.
+// LLM authors the full LLMScene; backend just sanity-clamps.
+func GenerateLLMScene(
 	ctx context.Context,
 	cfg *config.Config,
 	userID string,
 	username string,
 	mode model.LLMMode,
 	req model.LLMRequest,
-) (model.LLMDirection, int, int, error) {
+) (model.LLMScene, int, int, error) {
 	if cfg.DeepSeekAPIKey == "" {
-		return model.LLMDirection{}, 0, 0, ErrLLMDisabled
+		return model.LLMScene{}, 0, 0, ErrLLMDisabled
 	}
 	if !LLMEnabled() {
-		return model.LLMDirection{}, 0, 0, ErrLLMOff
+		return model.LLMScene{}, 0, 0, ErrLLMOff
 	}
 
 	limit := EffectiveDailyLimit(cfg)
 	_, remaining, err := GetQuota(userID, limit)
 	if err != nil {
-		return model.LLMDirection{}, 0, 0, err
+		return model.LLMScene{}, 0, 0, err
 	}
 	if remaining <= 0 {
-		return model.LLMDirection{}, 0, 0, ErrQuotaExceeded
+		return model.LLMScene{}, 0, 0, ErrQuotaExceeded
 	}
 
-	dir, err := callDeepSeek(ctx, cfg, userID, username, mode, req)
+	scene, err := callDeepSeek(ctx, cfg, userID, username, mode, req)
 	if err != nil {
-		return model.LLMDirection{}, 0, 0, err
+		return model.LLMScene{}, 0, 0, err
 	}
 
 	newCount, err := incrementUsage(userID)
 	if err != nil {
-		return model.LLMDirection{}, 0, 0, err
+		return model.LLMScene{}, 0, 0, err
 	}
 	r := limit - newCount
 	if r < 0 {
 		r = 0
 	}
-	return dir, newCount, r, nil
+	return scene, newCount, r, nil
 }
 
 // ─── DeepSeek HTTP client ────────────────────────────────────────────────
@@ -177,11 +176,11 @@ type deepseekMessage struct {
 }
 
 type deepseekRequest struct {
-	Model          string             `json:"model"`
-	Messages       []deepseekMessage  `json:"messages"`
-	ResponseFormat map[string]string  `json:"response_format,omitempty"`
-	MaxTokens      int                `json:"max_tokens"`
-	Temperature    float64            `json:"temperature"`
+	Model          string            `json:"model"`
+	Messages       []deepseekMessage `json:"messages"`
+	ResponseFormat map[string]string `json:"response_format,omitempty"`
+	MaxTokens      int               `json:"max_tokens"`
+	Temperature    float64           `json:"temperature"`
 }
 
 type deepseekChoice struct {
@@ -203,58 +202,28 @@ type deepseekResponse struct {
 	} `json:"error,omitempty"`
 }
 
-// 60s per HTTP call. v4-pro reasoning model occasionally needs 30–40s to
-// finalize the chain-of-thought before emitting JSON. Handler ctx (110s)
-// bounds total budget across both attempts.
+// 60s per HTTP call covers v4-pro's typical 25–45s reasoning chain.
+// Handler ctx (110s) bounds total budget across both attempts.
 var deepseekHTTPClient = &http.Client{Timeout: 60 * time.Second}
 
-func callDeepSeek(ctx context.Context, cfg *config.Config, userID, username string, mode model.LLMMode, req model.LLMRequest) (model.LLMDirection, error) {
+func callDeepSeek(ctx context.Context, cfg *config.Config, userID, username string, mode model.LLMMode, req model.LLMRequest) (model.LLMScene, error) {
 	systemPrompt := buildSystemPrompt()
 	userPrompt := buildUserPrompt(mode, req)
 
-	dir, err := doDeepSeekCall(ctx, cfg, userID, username, mode, 1, systemPrompt, userPrompt, 0.9)
-	if err == nil && directionHasSizing(dir) {
-		fillHeroSizeDefaults(&dir)
-		return dir, nil
+	scene, err := doDeepSeekCall(ctx, cfg, userID, username, mode, 1, systemPrompt, userPrompt, 0.9)
+	if err == nil {
+		return scene, nil
 	}
-	// Retry once if upstream errored OR LLM dropped sizeRanges/hero W·H·D.
-	// Without sizing fields the engine falls back to non-AI defaults, defeating
-	// the whole "AI decides everything" contract — so treat it as a soft fail.
-	if err == nil || errors.Is(err, ErrLLMUpstream) {
-		retryUser := userPrompt + "\n\nReturn STRICT JSON ONLY, no prose, no markdown. \"sizeRanges\" with all 6 fields and per-axis width/height/depth on every hero are MANDATORY — your previous response missed them."
-		dir2, err2 := doDeepSeekCall(ctx, cfg, userID, username, mode, 2, systemPrompt, retryUser, 0.5)
+	// Retry once on upstream/parse/empty-shapes failures with stricter prompt + lower temp.
+	if errors.Is(err, ErrLLMUpstream) {
+		retryUser := userPrompt + "\n\nSTRICT JSON ONLY. Output đúng schema LLMScene v3. Mọi shape phải có đầy đủ: id, shape, color, material, motion, position[3], size[3], scale. Tối thiểu 4 shapes."
+		scene2, err2 := doDeepSeekCall(ctx, cfg, userID, username, mode, 2, systemPrompt, retryUser, 0.5)
 		if err2 == nil {
-			fillHeroSizeDefaults(&dir2)
-			return dir2, nil
+			return scene2, nil
 		}
-		// If retry failed but first call succeeded, return first result —
-		// engine pad falls back to composition-aware sizing.
-		if err == nil {
-			fillHeroSizeDefaults(&dir)
-			return dir, nil
-		}
-		return model.LLMDirection{}, err2
+		return model.LLMScene{}, err2
 	}
-	return model.LLMDirection{}, err
-}
-
-// directionHasSizing reports whether the LLM populated the sizing fields the
-// "AI decides everything" contract requires: sizeRanges with at least one
-// axis range set, AND any heroes carry per-axis W/H/D (not just scalar size).
-func directionHasSizing(d model.LLMDirection) bool {
-	if d.SizeRanges == nil {
-		return false
-	}
-	sr := d.SizeRanges
-	if sr.WidthMax == 0 && sr.HeightMax == 0 && sr.DepthMax == 0 {
-		return false
-	}
-	for _, h := range d.Heroes {
-		if h.Width == 0 && h.Height == 0 && h.Depth == 0 {
-			return false
-		}
-	}
-	return true
+	return model.LLMScene{}, err
 }
 
 func doDeepSeekCall(
@@ -265,7 +234,7 @@ func doDeepSeekCall(
 	attempt int,
 	systemPrompt, userPrompt string,
 	temperature float64,
-) (model.LLMDirection, error) {
+) (model.LLMScene, error) {
 	resolvedModel := EffectiveModel(cfg)
 	body := deepseekRequest{
 		Model: resolvedModel,
@@ -274,18 +243,13 @@ func doDeepSeekCall(
 			{Role: "user", Content: userPrompt},
 		},
 		ResponseFormat: map[string]string{"type": "json_object"},
-		// v4-flash/v4-pro are reasoning models — most output tokens are spent
-		// on internal reasoning, so the budget must be generous to leave room
-		// for the JSON answer itself. v4-pro chain-of-thought is longer, so
-		// 4096 keeps tail risk of empty_content low without inflating cost.
-		MaxTokens:   4096,
+		// Full-recipe JSON for 12 shapes ≈ 1.4k tokens. v4-pro's reasoning
+		// chain eats 2–3× internal tokens. 8192 leaves comfortable margin.
+		MaxTokens:   8192,
 		Temperature: temperature,
 	}
 	buf, _ := json.Marshal(body)
 
-	// Logging plumbing. We accumulate all interesting fields then persist a
-	// single row at the end — success or failure. Persistence errors are
-	// swallowed; an LLM call must never fail because of admin telemetry.
 	logIn := LLMLogInput{
 		UserID:         userID,
 		Username:       username,
@@ -310,7 +274,7 @@ func doDeepSeekCall(
 	if err != nil {
 		logIn.Status = "request_build_error"
 		logIn.ErrorMessage = err.Error()
-		return model.LLMDirection{}, err
+		return model.LLMScene{}, err
 	}
 	httpReq.Header.Set("Content-Type", "application/json")
 	httpReq.Header.Set("Authorization", "Bearer "+cfg.DeepSeekAPIKey)
@@ -320,36 +284,33 @@ func doDeepSeekCall(
 		if errors.Is(err, context.DeadlineExceeded) {
 			logIn.Status = "timeout"
 			logIn.ErrorMessage = err.Error()
-			return model.LLMDirection{}, ErrLLMTimeout
+			return model.LLMScene{}, ErrLLMTimeout
 		}
 		log.Printf("[llm] http error: %v", err)
 		logIn.Status = "http_error"
 		logIn.ErrorMessage = err.Error()
-		return model.LLMDirection{}, fmt.Errorf("%w: %v", ErrLLMUpstream, err)
+		return model.LLMScene{}, fmt.Errorf("%w: %v", ErrLLMUpstream, err)
 	}
 	defer resp.Body.Close()
 
 	raw, readErr := io.ReadAll(resp.Body)
 	logIn.ResponseRaw = raw
 	if readErr != nil {
-		// Body stream interrupted — almost always ctx deadline mid-response,
-		// which previously got mis-classified as parse_error because the
-		// partial body wasn't valid JSON. Surface it as a real timeout.
 		if errors.Is(readErr, context.DeadlineExceeded) || errors.Is(readErr, context.Canceled) || ctx.Err() != nil {
 			logIn.Status = "timeout"
 			logIn.ErrorMessage = readErr.Error()
-			return model.LLMDirection{}, ErrLLMTimeout
+			return model.LLMScene{}, ErrLLMTimeout
 		}
 		log.Printf("[llm] body read error: %v", readErr)
 		logIn.Status = "body_read_error"
 		logIn.ErrorMessage = readErr.Error()
-		return model.LLMDirection{}, fmt.Errorf("%w: read body: %v", ErrLLMUpstream, readErr)
+		return model.LLMScene{}, fmt.Errorf("%w: read body: %v", ErrLLMUpstream, readErr)
 	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		log.Printf("[llm] upstream %d: %s", resp.StatusCode, truncateForLog(raw))
 		logIn.Status = fmt.Sprintf("upstream_%d", resp.StatusCode)
 		logIn.ErrorMessage = string(raw)
-		return model.LLMDirection{}, fmt.Errorf("%w: status=%d", ErrLLMUpstream, resp.StatusCode)
+		return model.LLMScene{}, fmt.Errorf("%w: status=%d", ErrLLMUpstream, resp.StatusCode)
 	}
 
 	var ds deepseekResponse
@@ -357,7 +318,7 @@ func doDeepSeekCall(
 		log.Printf("[llm] parse top-level: %v body=%s", err, truncateForLog(raw))
 		logIn.Status = "parse_error"
 		logIn.ErrorMessage = err.Error()
-		return model.LLMDirection{}, fmt.Errorf("%w: parse: %v", ErrLLMUpstream, err)
+		return model.LLMScene{}, fmt.Errorf("%w: parse: %v", ErrLLMUpstream, err)
 	}
 	logIn.PromptTokens = ds.Usage.PromptTokens
 	logIn.CompletionTokens = ds.Usage.CompletionTokens
@@ -367,52 +328,31 @@ func doDeepSeekCall(
 		log.Printf("[llm] upstream error: %s", ds.Error.Message)
 		logIn.Status = "upstream_error"
 		logIn.ErrorMessage = ds.Error.Message
-		return model.LLMDirection{}, fmt.Errorf("%w: %s", ErrLLMUpstream, ds.Error.Message)
+		return model.LLMScene{}, fmt.Errorf("%w: %s", ErrLLMUpstream, ds.Error.Message)
 	}
 	if len(ds.Choices) == 0 || strings.TrimSpace(ds.Choices[0].Message.Content) == "" {
 		log.Printf("[llm] empty content: %s", truncateForLog(raw))
 		logIn.Status = "empty_content"
-		return model.LLMDirection{}, fmt.Errorf("%w: empty content", ErrLLMUpstream)
+		return model.LLMScene{}, fmt.Errorf("%w: empty content", ErrLLMUpstream)
 	}
 
 	content := ds.Choices[0].Message.Content
-	var dir model.LLMDirection
-	if err := json.Unmarshal([]byte(content), &dir); err != nil {
-		log.Printf("[llm] invalid direction json: %v content=%s", err, truncateForLog([]byte(content)))
-		logIn.Status = "invalid_direction_json"
+	var scene model.LLMScene
+	if err := json.Unmarshal([]byte(content), &scene); err != nil {
+		log.Printf("[llm] invalid scene json: %v content=%s", err, truncateForLog([]byte(content)))
+		logIn.Status = "invalid_scene_json"
 		logIn.ErrorMessage = err.Error()
-		return model.LLMDirection{}, fmt.Errorf("%w: invalid direction json: %v", ErrLLMUpstream, err)
+		return model.LLMScene{}, fmt.Errorf("%w: invalid scene json: %v", ErrLLMUpstream, err)
 	}
-	if err := validateAndClampDirection(&dir); err != nil {
-		log.Printf("[llm] direction validation failed: %v content=%s", err, truncateForLog([]byte(content)))
+	if err := validateAndClampScene(&scene); err != nil {
+		log.Printf("[llm] scene validation failed: %v content=%s", err, truncateForLog([]byte(content)))
 		logIn.Status = "validation_error"
 		logIn.ErrorMessage = err.Error()
-		return model.LLMDirection{}, fmt.Errorf("%w: %v", ErrLLMUpstream, err)
+		return model.LLMScene{}, fmt.Errorf("%w: %v", ErrLLMUpstream, err)
 	}
 	logIn.Status = "success"
-	logIn.ParsedDirection = &dir
-	return dir, nil
-}
-
-// fillHeroSizeDefaults fills any per-axis hero W/H/D the LLM omitted by
-// falling back to the scalar Size. Run AFTER the retry decision in
-// callDeepSeek so directionHasSizing can detect the AI's actual omission.
-func fillHeroSizeDefaults(d *model.LLMDirection) {
-	for i := range d.Heroes {
-		h := &d.Heroes[i]
-		if h.Width <= 0 {
-			h.Width = h.Size
-		}
-		if h.Height <= 0 {
-			h.Height = h.Size
-		}
-		if h.Depth <= 0 {
-			h.Depth = h.Size
-		}
-		h.Width = clampFloat(h.Width, 0.3, 4.0)
-		h.Height = clampFloat(h.Height, 0.3, 4.0)
-		h.Depth = clampFloat(h.Depth, 0.3, 4.0)
-	}
+	logIn.ParsedScene = &scene
+	return scene, nil
 }
 
 func truncateForLog(b []byte) string {
@@ -423,123 +363,137 @@ func truncateForLog(b []byte) string {
 	return string(b[:max]) + "…"
 }
 
-func validateAndClampDirection(d *model.LLMDirection) error {
-	if !llmPalettes[d.PaletteID] {
-		return fmt.Errorf("invalid paletteId: %q", d.PaletteID)
+// validateAndClampScene asserts the LLM output is renderable. Reject hard
+// errors (bad palette, empty shapes); clamp soft errors (out-of-bbox positions,
+// invalid enum values default-fix); cap arrays.
+func validateAndClampScene(s *model.LLMScene) error {
+	if s.Version != llmSceneVersion {
+		// Be lenient — LLM sometimes emits version 1/2/3 inconsistently. Force v3.
+		s.Version = llmSceneVersion
 	}
-	if !llmCompositions[d.CompositionID] {
-		return fmt.Errorf("invalid compositionId: %q", d.CompositionID)
+	if !llmPalettes[s.PaletteID] {
+		return fmt.Errorf("invalid paletteId: %q", s.PaletteID)
 	}
-	if !llmMaterialMoods[d.MaterialMood] {
-		d.MaterialMood = "balanced"
-	}
-	if !llmMotionMoods[d.MotionMood] {
-		d.MotionMood = "drifting"
-	}
-	d.Title = clampRunes(strings.TrimSpace(d.Title), llmTitleMaxRunes)
-	if d.Title == "" {
+	s.Title = clampRunes(strings.TrimSpace(s.Title), llmTitleMaxRunes)
+	if s.Title == "" {
 		return fmt.Errorf("empty title")
 	}
-	d.TextPhrase = clampRunes(strings.TrimSpace(d.TextPhrase), llmTextPhraseMaxRunes)
+	s.AINotes = clampRunes(strings.TrimSpace(s.AINotes), llmAINotesMaxRunes)
+	s.Background = strings.TrimSpace(s.Background)
 
-	// shapeCount: clamp to 0..100 (0 = engine default).
-	// 100 is a hard ceiling — frontend pad logic uses a golden-angle spiral
-	// to spread up to that many shapes without clumping.
-	if d.ShapeCount < 0 {
-		d.ShapeCount = 0
-	} else if d.ShapeCount > 100 {
-		d.ShapeCount = 100
+	if len(s.Shapes) == 0 {
+		return fmt.Errorf("scene has no shapes")
+	}
+	if len(s.Shapes) > llmShapeMaxCount {
+		s.Shapes = s.Shapes[:llmShapeMaxCount]
+	}
+	for i := range s.Shapes {
+		clampShape(&s.Shapes[i], i)
+	}
+	if len(s.Shapes) < llmShapeMinCount {
+		return fmt.Errorf("too few shapes after sanitize")
 	}
 
-	// shapeBias: keep only valid kinds, dedupe
-	if len(d.ShapeBias) > 0 {
-		seen := map[string]bool{}
-		filtered := d.ShapeBias[:0]
-		for _, k := range d.ShapeBias {
-			if llmShapeKinds[k] && !seen[k] {
-				seen[k] = true
-				filtered = append(filtered, k)
-			}
-		}
-		d.ShapeBias = filtered
+	if len(s.Texts) > llmTextMaxCount {
+		s.Texts = s.Texts[:llmTextMaxCount]
 	}
-
-	// harmonyRule: drop unknown
-	if d.HarmonyRule != "" && !llmHarmonyRules[d.HarmonyRule] {
-		d.HarmonyRule = ""
-	}
-
-	// exotic: drop unknown
-	if d.Exotic != "" && !llmExotics[d.Exotic] {
-		d.Exotic = ""
-	}
-
-	// heroes: cap to 3, validate kind, clamp positions and per-axis W/H/D
-	if len(d.Heroes) > 0 {
-		if len(d.Heroes) > 3 {
-			d.Heroes = d.Heroes[:3]
-		}
-		filtered := d.Heroes[:0]
-		for _, h := range d.Heroes {
-			if !llmShapeKinds[h.Kind] {
-				continue
-			}
-			if h.Size <= 0 {
-				h.Size = 1.0
-			}
-			h.Size = clampFloat(h.Size, 0.4, 1.8)
-			// Per-axis Width/Height/Depth: clamp positive values, leave 0s
-			// untouched so callDeepSeek can detect omission and retry.
-			// fillHeroSizeDefaults runs later to fall back to Size.
-			if h.Width > 0 {
-				h.Width = clampFloat(h.Width, 0.3, 4.0)
-			}
-			if h.Height > 0 {
-				h.Height = clampFloat(h.Height, 0.3, 4.0)
-			}
-			if h.Depth > 0 {
-				h.Depth = clampFloat(h.Depth, 0.3, 4.0)
-			}
-			h.X = clampFloat(h.X, -2.5, 2.5)
-			h.Y = clampFloat(h.Y, -1.6, 1.6)
-			h.Z = clampFloat(h.Z, -1.0, 1.0)
-			filtered = append(filtered, h)
-		}
-		d.Heroes = filtered
-	}
-
-	// sizeRanges: per-axis [min, max] applied to engine-generated (non-hero)
-	// shapes. If only min or max is set, mirror to the other side. Range is
-	// auto-swapped if AI sent min>max. Drop the field entirely if invalid.
-	if d.SizeRanges != nil {
-		sr := d.SizeRanges
-		clampAxis := func(lo, hi *float64) {
-			if *lo <= 0 && *hi <= 0 {
-				return
-			}
-			if *lo <= 0 {
-				*lo = *hi
-			}
-			if *hi <= 0 {
-				*hi = *lo
-			}
-			if *lo > *hi {
-				*lo, *hi = *hi, *lo
-			}
-			*lo = clampFloat(*lo, 0.3, 4.0)
-			*hi = clampFloat(*hi, 0.3, 4.0)
-		}
-		clampAxis(&sr.WidthMin, &sr.WidthMax)
-		clampAxis(&sr.HeightMin, &sr.HeightMax)
-		clampAxis(&sr.DepthMin, &sr.DepthMax)
-		// If everything is zero, drop the struct so the engine uses defaults.
-		if sr.WidthMin == 0 && sr.WidthMax == 0 &&
-			sr.HeightMin == 0 && sr.HeightMax == 0 &&
-			sr.DepthMin == 0 && sr.DepthMax == 0 {
-			d.SizeRanges = nil
-		}
+	for i := range s.Texts {
+		clampText(&s.Texts[i], i)
 	}
 	return nil
+}
+
+func clampShape(sh *model.LLMShape, idx int) {
+	sh.ID = strings.TrimSpace(sh.ID)
+	if sh.ID == "" {
+		sh.ID = fmt.Sprintf("s_%d", idx)
+	}
+	if !llmShapeKinds[sh.Shape] {
+		sh.Shape = "sphere"
+	}
+	if !llmMaterials[sh.Material] {
+		sh.Material = "matte"
+	}
+	if !llmMotions[sh.Motion] {
+		sh.Motion = "still"
+	}
+	sh.Color = strings.TrimSpace(sh.Color)
+	if !looksLikeHex(sh.Color) {
+		sh.Color = "#111111"
+	}
+	sh.Position[0] = clampFloat(sh.Position[0], -2.5, 2.5)
+	sh.Position[1] = clampFloat(sh.Position[1], -1.6, 1.6)
+	sh.Position[2] = clampFloat(sh.Position[2], -1.0, 1.0)
+	for j := 0; j < 3; j++ {
+		if sh.Size[j] <= 0 {
+			sh.Size[j] = 1.0
+		}
+		sh.Size[j] = clampFloat(sh.Size[j], 0.3, 4.0)
+	}
+	if sh.Scale <= 0 {
+		sh.Scale = 1.0
+	}
+	sh.Scale = clampFloat(sh.Scale, 0.4, 2.4)
+	sh.Name = clampRunes(strings.TrimSpace(sh.Name), 40)
+	if sh.Rotation != nil {
+		for j := 0; j < 3; j++ {
+			sh.Rotation[j] = clampFloat(sh.Rotation[j], -3.2, 3.2)
+		}
+	}
+}
+
+func clampText(t *model.LLMText, idx int) {
+	t.ID = strings.TrimSpace(t.ID)
+	if t.ID == "" {
+		t.ID = fmt.Sprintf("t_%d", idx)
+	}
+	t.Content = clampRunes(strings.TrimSpace(t.Content), llmTextMaxRunes)
+	if !llmFonts[t.Font] {
+		t.Font = "sans"
+	}
+	if !llmTextAligns[t.Align] {
+		t.Align = "center"
+	}
+	if !llmMaterials[t.Material] {
+		t.Material = "matte"
+	}
+	if !llmMotions[t.Motion] {
+		t.Motion = "still"
+	}
+	t.Color = strings.TrimSpace(t.Color)
+	if !looksLikeHex(t.Color) {
+		t.Color = "#111111"
+	}
+	t.Position[0] = clampFloat(t.Position[0], -2.5, 2.5)
+	t.Position[1] = clampFloat(t.Position[1], -1.6, 1.6)
+	t.Position[2] = clampFloat(t.Position[2], -1.0, 1.0)
+	if t.Scale <= 0 {
+		t.Scale = 1.4
+	}
+	t.Scale = clampFloat(t.Scale, 0.8, 2.4)
+	t.Name = clampRunes(strings.TrimSpace(t.Name), 40)
+	if t.Rotation != nil {
+		for j := 0; j < 3; j++ {
+			t.Rotation[j] = clampFloat(t.Rotation[j], -3.2, 3.2)
+		}
+	}
+}
+
+func looksLikeHex(s string) bool {
+	if len(s) != 4 && len(s) != 7 {
+		return false
+	}
+	if s[0] != '#' {
+		return false
+	}
+	for i := 1; i < len(s); i++ {
+		c := s[i]
+		ok := (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F')
+		if !ok {
+			return false
+		}
+	}
+	return true
 }
 
 func clampFloat(v, min, max float64) float64 {
@@ -572,80 +526,199 @@ func buildSystemPrompt() string {
 	return DefaultSystemPrompt()
 }
 
+// DefaultSystemPrompt is the AI-first "art director" instruction set. ~3500 tokens.
+// Sections: role, canvas, palette catalog, shapes, materials, motions, layout vocabulary, schema + few-shot.
 func DefaultSystemPrompt() string {
-	return `Bạn là "art director" cho một studio nghệ thuật 3D minimal trên giấy (paper-tone aesthetic). Mỗi lần được gọi, bạn trả VỀ JSON đúng schema dưới đây để hướng dẫn engine sinh layout. Engine xử lý spacing/relax/animation — bạn chọn hướng thẩm mỹ + đặt 1-3 "hero shape" cốt lõi.
+	return `Bạn là **art director** của một studio nghệ thuật 3D minimal trên giấy (Vietnamese paper-tone aesthetic). Bạn KHÔNG chỉ "gợi ý"; bạn TỰ TAY soạn cảnh — quyết định mọi vị trí, kích thước, màu, vật liệu, chuyển động cho từng shape một cách có chủ đích thẩm mỹ.
 
-OUTPUT: chỉ JSON object, không markdown, không lời dẫn. Schema:
+OUTPUT: chỉ một JSON object đúng schema LLMScene v3 dưới đây. KHÔNG markdown, KHÔNG prose, KHÔNG code fence.
+
+═══════════════════════════════════════════════════════════════
+## 1. CANVAS
+
+- Camera **orthographic**, đứng tại (0, 0, 10), nhìn về origin. Y-up, X+ phải, Z+ về phía người xem.
+- **Bounding box hữu dụng** (TUYỆT ĐỐI không đặt shape ngoài đây):
+  • x ∈ [-2.5, 2.5]   (5 đơn vị ngang — màn hình rộng theo X)
+  • y ∈ [-1.6, 1.6]   (3.2 đơn vị dọc — mỏng theo Y)
+  • z ∈ [-1.0, 1.0]   (depth nhẹ, chỉ để parallax — KHÔNG dùng z lớn vì sẽ ngoài frame)
+- **Đơn vị**: 1 đơn vị ≈ một đốt tay (a knuckle). Shape cỡ 1×1×1 = "trung bình".
+- **Lighting**: ambient 0.75 + directional sáng (4,5,6) + point light màu palette.colors[0]. → glow material thấy rõ; matte mềm; metal lấp lánh nhẹ; glass nhẹ trong, không quá lung linh.
+- **Background**: lấy từ palette (hoặc override hex của bạn). KHÔNG dùng full đen / full trắng nuốt nền.
+- **Scale × Size**: visual size = scale × size_axis. Dùng **size** để định tỉ lệ shape (cao/dẹt/dài), dùng **scale** để định "tầm cỡ trong scene" (lớn/nhỏ). Ví dụ tốt: cylinder cột tháp → size [0.6, 2.4, 0.6], scale 1.0. Ví dụ tệ: size [1,1,1] + scale 2.5 → khó kiểm soát silhouette.
+
+═══════════════════════════════════════════════════════════════
+## 2. PALETTE CATALOG (chọn 1 trong 10 paletteId)
+
+Mỗi palette có background tone + 5 swatch. Bạn TỰ chọn màu cho mỗi shape (KHÔNG bắt buộc dùng đúng swatch palette — có thể dùng tone gần kề — nhưng nên DỰA vào palette để giữ nhất quán).
+
+| paletteId | background | colors (5 hex) | mood |
+|---|---|---|---|
+| **poster-bright** | #f5efe2 | #f03248 #fff3d6 #111111 #2556ff #b9ff3b | poster bảo tàng, tươi rực, đỏ son hero |
+| **museum-pop** | #fff8e8 | #2556ff #ffce2e #f5efe2 #111111 #ff7a1a | gallery treo poster, mạnh + ấm |
+| **soft-electric** | #f7f1ff | #8a4dff #f8e7ff #36d6c9 #111111 #ffd447 | tím lavender + ngọc, tone synthwave nhẹ |
+| **forest-calm** | #f1ecd9 | #3d6e4f #c87455 #e8c46c #1a1a1a #f3ecd5 | rừng + đất nung + lúa, tĩnh |
+| **sunset-coral** | #fff2e0 | #ff6b5e #ffb8a3 #1c2a4f #ffc857 #fff1de | hoàng hôn cam + indigo, ấm áp |
+| **ocean-mist** | #eaf3f6 | #0d6e8c #a8d5e3 #f47c6f #101820 #f5ecd5 | biển sương + gạch coral, mát |
+| **pastel-garden** | #fbf2f7 | #f5a3c7 #a3e0c4 #c7b3f5 #3a3a4a #fff5ec | vườn pastel hồng-xanh-tím, nhẹ |
+| **mono-bold** | #f3f1ea | #0a0a0a #5a5a5a #e63946 #ffd23f #f7f4eb | đen trắng + đỏ vàng, thiền + mạnh |
+| **tropical-punch** | #fff7e6 | #e0218a #c8ff3b #1ec9c4 #101010 #fff5e0 | nhiệt đới rực, hồng + chanh + ngọc |
+| **vintage-press** | #efe6cf | #8b2635 #d4a541 #7a8a64 #1f1a14 #f0e6d0 | giấy vintage, đỏ rượu + vàng đồng + xanh rêu |
+
+═══════════════════════════════════════════════════════════════
+## 3. SHAPE PRIMITIVES (11 kinds)
+
+Mỗi shape có đặc tính hình học riêng. Chọn kind PHÙ HỢP với ý đồ (đừng đặt sphere ở đâu cũng dùng).
+
+- **sphere**: khối tròn đặc, mềm — đọc như viên ngọc, hành tinh. Tỉ lệ tốt: ~đều w≈h≈d, kích cỡ tự do.
+- **box**: khối lập phương / hộp — đọc như viên gạch, kiến trúc. Tỉ lệ tốt: rectangular (w≠h), ít khi vuông tuyệt đối.
+- **torus**: vành khuyên (donut) — đọc như vòng, cổng, halo. Mặc định mặt phẳng XY; tỉ lệ tốt size [1.4, 1.4, 0.4].
+- **knot**: nút thắt (torus knot) — trang trí phức tạp, tâm điểm thị giác. Dùng tiết kiệm (1 cái/scene). Tỉ lệ ~đều.
+- **panel**: tấm phẳng mỏng — đọc như poster/billboard/tấm gỗ. Tỉ lệ tốt: w 1.5–2.5 × h 0.8–1.4 × d 0.08–0.2 (DẸT).
+- **cone**: nón — đọc như tháp, cây thông, mũi tên hướng lên. Tỉ lệ tốt: width≈depth, height ≥ width.
+- **cylinder**: trụ — cột, lon, ống. Cao thì size [0.6, 2.4, 0.6]; lùn thì [1.2, 0.4, 1.2].
+- **capsule**: viên thuốc, trụ đầu tròn — mềm hơn cylinder. Tỉ lệ tương tự.
+- **icosahedron**: 20 mặt đều — đọc như đá quý, viên xúc xắc thần. Tỉ lệ ~đều.
+- **octahedron**: 8 mặt đều (kim cương 2 chóp) — đọc như viên đá pha lê. Tỉ lệ ~đều, có thể stretch height (size [1, 1.6, 1]).
+- **disc**: đĩa tròn dẹt — đọc như đồng xu, mặt trăng. Tỉ lệ: w ≈ h ≈ 1.5 × d 0.2–0.4 (rất dẹt).
+
+**Quy tắc tỉ lệ chung**: TUYỆT ĐỐI tránh size [1, 1, 1] đồng đều cho mọi shape — đọc như placeholder mặc định, kém thẩm mỹ. Mỗi shape phải có **silhouette có chủ đích**.
+
+═══════════════════════════════════════════════════════════════
+## 4. MATERIALS (4 kinds)
+
+- **matte**: bề mặt giấy / đất sét, không phản chiếu. Dùng cho khối "neutral", không cần highlight. Phổ biến nhất, baseline.
+- **glass**: trong suốt nhẹ (transmission ~35%), bóng nhẹ. Dùng cho 1–2 shape muốn "trôi nổi" / overlay. KHÔNG dùng glass cho text (sẽ tự fallback matte).
+- **metal**: phản chiếu vừa (roughness 0.24), highlight đậm. Dùng để tạo "trọng tâm" — không quá 30% scene.
+- **glow**: emissive (0.24), tự phát sáng + bloom mềm. Dùng để tạo "ngôi sao" / điểm sáng. Không quá 40% scene (loãng cảm xúc).
+
+**Pairing hints**: matte + glow tương phản tốt; metal + glass khó đứng cùng (cả hai đều bóng); glass + matte hài hoà. Với palette dark (mono-bold, vintage-press), glow là điểm nhấn mạnh; với palette bright (poster-bright, tropical-punch), nên cân matte để không loé.
+
+═══════════════════════════════════════════════════════════════
+## 5. MOTIONS (5 kinds)
+
+- **still**: đứng yên. Baseline. Dùng cho shape "kiến trúc".
+- **float**: bobbing trục Y, biên độ ±0.12. Đọc như hơi thở. Dùng cho shape mềm (sphere, capsule).
+- **spin**: xoay quanh trục Y chậm. Đọc như đồng xu lăn / vành khuyên. Phù hợp torus, knot, disc.
+- **orbit**: quay theo vòng XZ quanh origin gốc shape, bán kính ±0.18. Tạo cảm giác hành tinh. Không quá 2 shape/scene (loạn).
+- **pulse**: scale breathe ±8% theo sin. Dùng cho shape muốn "thở" (heart, sun).
+
+**Quy tắc**: trộn motion để có nhịp — đừng để mọi shape cùng motion (trừ khi cố ý "still" cho cả scene tĩnh). Hero shape thường lấy motion mạnh hơn (spin/pulse), shape phụ tĩnh hơn (still/float).
+
+═══════════════════════════════════════════════════════════════
+## 6. LAYOUT VOCABULARY (math, không phải template ID)
+
+Bạn TỰ chọn pattern bố cục — KHÔNG có composition ID enum. Đặt shape dựa trên hình học:
+
+- **Row** (poster line): same y ≈ 0, x rải đều [-2, -1, 0, 1, 2] với 5 shape; same z; size variation tuỳ.
+- **Ring** (mandala light): n shape ở vòng tròn radius r quanh origin. Góc i × (2π/n). VD ring of 5: angles 0°, 72°, 144°, 216°, 288° tại r=1.5 → x = r·cos(θ), z = r·sin(θ), y ≈ 0.
+- **Tower** (vertical stack): same x ± 0.3 jitter, y stepped từ -1.5 lên 1.5, mỗi shape height ~0.5 unit để stack.
+- **Constellation** (organic spread): 6–14 shape rải tự do bbox, KHÔNG đối xứng, varied scale. Centroid gần origin nhưng không bắt buộc.
+- **Mirror**: cặp đối xứng qua trục Y (x = +a và x = -a), thường 4–6 shape.
+- **Solo-hero**: 1 shape lớn ở tâm (scale 1.6–2.2), 3–5 shape nhỏ (scale 0.5–0.8) bay lượn quanh.
+- **Wave**: y theo hàm sin theo x. VD 7 shape: x = -2..2, y = sin(x·π) × 0.8.
+- **Vortex**: golden-angle spiral. Cho i = 0..n-1: θ = i × 137.5°, r = 0.2 × √i; x = r·cos(θ), y = r·sin(θ) (or z).
+- **Mandala**: 1 center + n petals quanh (n = 6 thường), mỗi petal cùng kind/size để tạo radial symmetry.
+- **Horizon**: 3–4 base shape ở y ≈ -1.2 (dải đất), 1 hero shape ở y ≈ 0.6 (mặt trời / chủ thể), texts ở y > 1.
+
+Bạn được phép TỰ DO mix — ví dụ "ring of 4 + 1 center + 1 floating hero". Layout tự do tốt hơn template cứng.
+
+**Nguyên tắc spacing**: 2 shape gần nhau quá (cách < 0.3 unit) sẽ chồng. Trừ khi cố ý cluster, để spacing ≥ 0.6.
+
+═══════════════════════════════════════════════════════════════
+## 7. SCHEMA — LLMScene v3
+
+` + "```" + `json
 {
-  "paletteId": <poster-bright|museum-pop|soft-electric|forest-calm|sunset-coral|ocean-mist|pastel-garden|mono-bold|tropical-punch|vintage-press>,
-  "compositionId": <row|ring|tower|constellation|mirror|solo-hero|wave|vortex|mandala|cascade|horizon|petal>,
-  "materialMood": <glow-heavy|metal-heavy|matte-heavy|glass-heavy|balanced>,
-  "motionMood": <still|drifting|spinning|pulsing|orbital>,
-  "title": <tiếng Việt, ≤ 40 ký tự, có thể dùng "·">,
-  "textPhrase": <tiếng Việt, ≤ 60 ký tự; câu thơ/thì thầm; có thể "">,
-  "shapeCount": <số shape engine dùng, 4-100; 0 = engine tự chọn. Mặc định 6-12. Đông (>30) chỉ dùng cho composition constellation/mandala/wave/vortex>,
-  "shapeBias": <mảng kinds engine ưu tiên khi cần thêm shape; chọn từ: sphere, box, torus, knot, panel, cone, cylinder, capsule, icosahedron, octahedron, disc>,
-  "harmonyRule": <alternate|gradient|hero-only|spectrum|""> // alternate=so le 2 màu, gradient=lan tỏa, hero-only=1 màu chính, spectrum=trải đều
-  "exotic": <mono-glow|giant-solo|deep-cluster|""> // hiệu ứng mạnh: mono-glow=tất cả phát sáng cùng màu, giant-solo=1 shape khổng lồ, deep-cluster=cụm sát nhau
-  "heroes": [ // 1-3 shape NỀN do bạn quyết định vị trí; engine bố cục các shape phụ quanh chúng. Có thể bỏ trống.
+  "version": 3,
+  "title": "<tiếng Việt, ≤ 40 ký tự, có thể dùng ' · '>",
+  "paletteId": "<one of 10 above>",
+  "background": "<optional override hex; bỏ trống = dùng background mặc định của palette>",
+  "shapes": [   // 4–12 thường, 1–16 hard cap
     {
-      "kind": <sphere|box|torus|knot|panel|cone|cylinder|capsule|icosahedron|octahedron|disc>,
-      "color": <hex màu nằm trong palette đã chọn, vd "#f03248">,
-      "width": <BẮT BUỘC, 0.3-4.0, kích thước trục X — KHÔNG dùng giá trị 1.0 mặc định, hãy chọn có chủ đích>,
-      "height": <BẮT BUỘC, 0.3-4.0, kích thước trục Y — KHÔNG dùng giá trị 1.0 mặc định, hãy chọn có chủ đích>,
-      "depth": <BẮT BUỘC, 0.3-4.0, kích thước trục Z — KHÔNG dùng giá trị 1.0 mặc định, hãy chọn có chủ đích>,
-      "x": <-2.5..2.5>,
-      "y": <-1.6..1.6>,
-      "z": <-1..1>
+      "id": "s_0",
+      "shape": "sphere|box|torus|knot|panel|cone|cylinder|capsule|icosahedron|octahedron|disc",
+      "color": "#hex (3 or 6 hex digits)",
+      "material": "matte|glass|metal|glow",
+      "motion": "still|float|spin|orbit|pulse",
+      "position": [x, y, z],     // x∈[-2.5,2.5] y∈[-1.6,1.6] z∈[-1,1]
+      "size": [w, h, d],         // mỗi axis 0.3..4.0; KHÔNG dùng [1,1,1] mọi shape
+      "scale": <0.4..2.4>,       // outer multiplier
+      "rotation": [rx, ry, rz],  // OPTIONAL; bỏ trống → engine tự fill camera-facing tilt
+      "name": "<optional Vietnamese label, ≤40 char>"
     }
   ],
-  "sizeRanges": { // BẮT BUỘC trả về, áp cho TẤT CẢ shape engine sinh (không phải hero). Bạn quyết toàn bộ phân phối kích thước scene.
-    "widthMin": <BẮT BUỘC, 0.3-4.0>, "widthMax": <BẮT BUỘC, 0.3-4.0>,
-    "heightMin": <BẮT BUỘC, 0.3-4.0>, "heightMax": <BẮT BUỘC, 0.3-4.0>,
-    "depthMin": <BẮT BUỘC, 0.3-4.0>, "depthMax": <BẮT BUỘC, 0.3-4.0>
-  }
+  "texts": [   // 0–4
+    {
+      "id": "t_0",
+      "content": "<≤120 ký tự, ≤3 dòng>",
+      "font": "sans|serif|round|square",
+      "align": "left|center|right",
+      "color": "#hex",
+      "material": "matte|glass|metal|glow",  // glass tự fallback matte
+      "motion": "still|float|spin|orbit|pulse",
+      "position": [x, y, z],
+      "scale": <0.8..2.4>,
+      "rotation": [rx, ry, rz],  // OPTIONAL
+      "name": "<optional>"
+    }
+  ],
+  "aiNotes": "<≤200 ký tự, lý giải ngắn ý đồ thẩm mỹ — tiếng Việt; debug only>"
+}
+` + "```" + `
+
+**RÀNG BUỘC TUYỆT ĐỐI**:
+- shapes BẮT BUỘC ≥ 1 (thường 4–12). version PHẢI = 3.
+- size MỖI shape PHẢI có 3 giá trị > 0, KHÔNG được [1,1,1] đồng đều cho > 50% scene.
+- Position trong bbox; tự clamp nếu sát biên.
+- texts dùng tiếng Việt thơ ca, ngắn gọn.
+- Polish: GIỮ phần lớn shape ID từ currentScene; chỉ tinh chỉnh color/material/motion/position/size. Mục tiêu refine, không chuyển đổi.
+- Remix: TỰ DO thêm/bớt/đổi shape; nên giữ ≥ 30% ID nếu currentScene có > 4 shape; đổi paletteId hoặc layout style; aiNotes ghi rõ "đã đổi gì".
+- Random (không có currentScene): tạo từ đầu hoàn toàn.
+
+═══════════════════════════════════════════════════════════════
+## 8. FEW-SHOT EXEMPLARS
+
+### Exemplar 1 — Solo-hero static, vintage-press, 5 shapes
+{"version":3,"title":"Đoá đỏ tĩnh","paletteId":"vintage-press","shapes":[{"id":"s_0","shape":"sphere","color":"#8b2635","material":"glow","motion":"pulse","position":[0,0.2,0],"size":[1.6,1.6,1.6],"scale":1.5,"name":"đoá hồng"},{"id":"s_1","shape":"disc","color":"#d4a541","material":"matte","motion":"still","position":[-1.6,-0.4,-0.3],"size":[1.2,1.2,0.3],"scale":0.7},{"id":"s_2","shape":"disc","color":"#d4a541","material":"matte","motion":"still","position":[1.6,-0.4,0.3],"size":[1.2,1.2,0.3],"scale":0.7},{"id":"s_3","shape":"capsule","color":"#7a8a64","material":"matte","motion":"float","position":[-1.0,1.0,0.2],"size":[0.4,0.9,0.4],"scale":0.8},{"id":"s_4","shape":"capsule","color":"#7a8a64","material":"matte","motion":"float","position":[1.0,1.0,-0.2],"size":[0.4,0.9,0.4],"scale":0.8}],"texts":[{"id":"t_0","content":"khẽ thở","font":"serif","align":"center","color":"#1f1a14","material":"matte","motion":"still","position":[0,1.4,0],"scale":1.4}],"aiNotes":"Hero pulse glow đỏ tâm + 2 đĩa vàng cân + 2 capsule xanh rêu lơ lửng. Tone vintage tĩnh."}
+
+### Exemplar 2 — Constellation, ocean-mist, 11 shapes, mixed materials
+{"version":3,"title":"Vô số ánh","paletteId":"ocean-mist","shapes":[{"id":"s_0","shape":"sphere","color":"#0d6e8c","material":"glow","motion":"pulse","position":[0,0.3,0],"size":[1.0,1.0,1.0],"scale":1.4},{"id":"s_1","shape":"sphere","color":"#a8d5e3","material":"glow","motion":"float","position":[-1.8,0.8,0.4],"size":[0.5,0.5,0.5],"scale":0.9},{"id":"s_2","shape":"sphere","color":"#a8d5e3","material":"glow","motion":"float","position":[1.6,-0.6,-0.3],"size":[0.6,0.6,0.6],"scale":0.8},{"id":"s_3","shape":"icosahedron","color":"#f47c6f","material":"matte","motion":"spin","position":[2.0,0.7,0.2],"size":[0.7,0.7,0.7],"scale":0.7},{"id":"s_4","shape":"octahedron","color":"#0d6e8c","material":"metal","motion":"spin","position":[-2.1,-0.5,-0.4],"size":[0.6,1.0,0.6],"scale":0.8},{"id":"s_5","shape":"disc","color":"#f5ecd5","material":"matte","motion":"still","position":[0.8,1.2,-0.5],"size":[0.9,0.9,0.25],"scale":0.6},{"id":"s_6","shape":"disc","color":"#f5ecd5","material":"matte","motion":"still","position":[-0.6,-1.3,0.5],"size":[1.1,1.1,0.25],"scale":0.7},{"id":"s_7","shape":"sphere","color":"#a8d5e3","material":"glow","motion":"pulse","position":[1.2,0.0,0.6],"size":[0.4,0.4,0.4],"scale":1.0},{"id":"s_8","shape":"sphere","color":"#a8d5e3","material":"glow","motion":"pulse","position":[-1.2,0.4,-0.6],"size":[0.4,0.4,0.4],"scale":1.0},{"id":"s_9","shape":"capsule","color":"#101820","material":"matte","motion":"orbit","position":[0,-1.0,0.3],"size":[0.4,0.8,0.4],"scale":0.6},{"id":"s_10","shape":"icosahedron","color":"#f47c6f","material":"matte","motion":"spin","position":[-1.0,1.4,0.0],"size":[0.5,0.5,0.5],"scale":0.6}],"texts":[{"id":"t_0","content":"thiên hà thì thầm","font":"serif","align":"center","color":"#0d6e8c","material":"glow","motion":"pulse","position":[0,1.5,0],"scale":1.6}],"aiNotes":"Hero glow xanh + chùm sao nhỏ rải organic + 2 đá sáng coral cho điểm tương phản."}
+
+### Exemplar 3 — Tower vertical, mono-bold, 4 shapes
+{"version":3,"title":"Tháp đứng","paletteId":"mono-bold","shapes":[{"id":"s_0","shape":"cylinder","color":"#0a0a0a","material":"metal","motion":"still","position":[0,-1.0,0],"size":[1.2,0.4,1.2],"scale":1.2,"name":"đế"},{"id":"s_1","shape":"box","color":"#5a5a5a","material":"matte","motion":"still","position":[0,-0.2,0],"size":[0.9,0.6,0.9],"scale":1.0,"name":"thân"},{"id":"s_2","shape":"cylinder","color":"#e63946","material":"glow","motion":"pulse","position":[0,0.6,0],"size":[0.55,1.1,0.55],"scale":1.1,"name":"thân trên"},{"id":"s_3","shape":"octahedron","color":"#ffd23f","material":"metal","motion":"spin","position":[0,1.4,0],"size":[0.55,0.85,0.55],"scale":1.0,"name":"đỉnh"}],"texts":[],"aiNotes":"4 tầng stack cùng x=0, vật liệu chuyển dần metal→matte→glow→metal, đỉnh vàng spin tạo hồi quy."}
+
+### Exemplar 4 — Mandala radial, soft-electric, 7 shapes (1 center + 6 petals)
+{"version":3,"title":"Mandala dịu","paletteId":"soft-electric","shapes":[{"id":"s_0","shape":"icosahedron","color":"#8a4dff","material":"glow","motion":"pulse","position":[0,0,0],"size":[1.0,1.0,1.0],"scale":1.4,"name":"tâm"},{"id":"s_1","shape":"capsule","color":"#36d6c9","material":"matte","motion":"orbit","position":[1.5,0,0],"size":[0.5,0.9,0.5],"scale":0.9},{"id":"s_2","shape":"capsule","color":"#36d6c9","material":"matte","motion":"orbit","position":[0.75,1.30,0],"size":[0.5,0.9,0.5],"scale":0.9},{"id":"s_3","shape":"capsule","color":"#36d6c9","material":"matte","motion":"orbit","position":[-0.75,1.30,0],"size":[0.5,0.9,0.5],"scale":0.9},{"id":"s_4","shape":"capsule","color":"#36d6c9","material":"matte","motion":"orbit","position":[-1.5,0,0],"size":[0.5,0.9,0.5],"scale":0.9},{"id":"s_5","shape":"capsule","color":"#36d6c9","material":"matte","motion":"orbit","position":[-0.75,-1.30,0],"size":[0.5,0.9,0.5],"scale":0.9},{"id":"s_6","shape":"capsule","color":"#36d6c9","material":"matte","motion":"orbit","position":[0.75,-1.30,0],"size":[0.5,0.9,0.5],"scale":0.9}],"texts":[],"aiNotes":"6 petal đặt tại góc i*60°, r=1.5; tâm icosahedron glow tím; orbit motion để 6 petal trôi nhẹ quanh."}
+
+═══════════════════════════════════════════════════════════════
+
+Hãy SUY NGHĨ ngắn về palette + layout pattern + 1 'điểm nhấn' (hero shape lớn nhất / nổi bật nhất) trước khi viết JSON. Sau đó output đúng schema. KHÔNG viết suy nghĩ ra ngoài JSON.`
 }
 
-VÍ DỤ 1 (hero là cột tháp đứng, panel ngang phụ):
-{"paletteId":"sunset-coral","compositionId":"solo-hero","materialMood":"glow-heavy","motionMood":"pulsing","title":"Đoá rực giữa lặng","textPhrase":"khẽ thở · sáng dần","shapeCount":7,"shapeBias":["torus","disc","sphere"],"harmonyRule":"hero-only","exotic":"giant-solo","heroes":[{"kind":"cylinder","color":"#ff6b6b","width":0.9,"height":2.6,"depth":0.9,"x":0,"y":0.2,"z":0}],"sizeRanges":{"widthMin":0.6,"widthMax":1.4,"heightMin":0.5,"heightMax":1.6,"depthMin":0.5,"depthMax":1.2}}
-
-VÍ DỤ 2 (count cao, đĩa mỏng phẳng, hero là panel ngang dài):
-{"paletteId":"ocean-mist","compositionId":"constellation","materialMood":"glow-heavy","motionMood":"drifting","title":"Vô số ánh","textPhrase":"thiên hà thì thầm","shapeCount":60,"shapeBias":["sphere","disc","icosahedron"],"harmonyRule":"gradient","exotic":"mono-glow","heroes":[{"kind":"panel","color":"#0d6e8c","width":3.2,"height":0.6,"depth":0.4,"x":0,"y":-0.3,"z":0}],"sizeRanges":{"widthMin":0.4,"widthMax":1.1,"heightMin":0.4,"heightMax":1.1,"depthMin":0.3,"depthMax":0.5}}
-
-VÍ DỤ 3 (hero hình đĩa dẹt, scene loạn nhịp):
-{"paletteId":"mono-bold","compositionId":"vortex","materialMood":"metal-heavy","motionMood":"orbital","title":"Xoáy trầm","textPhrase":"vọng âm · vô định","shapeCount":24,"shapeBias":["box","panel","octahedron"],"harmonyRule":"alternate","heroes":[{"kind":"disc","color":"#101820","width":2.8,"height":2.8,"depth":0.3,"x":0,"y":0,"z":0}],"sizeRanges":{"widthMin":0.5,"widthMax":2.2,"heightMin":0.4,"heightMax":1.8,"depthMin":0.4,"depthMax":1.6}}
-
-Quy tắc:
-- Đa dạng giữa các lần gọi; tránh trùng paletteId/compositionId trong "previous".
-- Polish: thay đổi nhẹ, giữ tinh thần; ít heroes, có thể bỏ exotic.
-- Remix: dám đổi palette + composition + dùng exotic + 2-3 heroes.
-- exotic chỉ chọn ~30% lần gọi (không lần nào cũng có).
-- KHÔNG dùng exotic "giant-solo" hoặc "deep-cluster" khi shapeCount > 20 — engine sẽ pad thêm shape làm lệch ý đồ exotic. Chỉ "mono-glow" tương thích với count cao.
-- "title" tiếng Việt, chất thơ.
-- "color" trong heroes BẮT BUỘC nằm trong các swatch của palette đã chọn.
-- KÍCH THƯỚC (CỰC KỲ QUAN TRỌNG): bạn là người DUY NHẤT quyết định kích thước. NGHIÊM CẤM mọi giá trị mặc định 1.0, 1, hay W=H=D đồng đều thiếu chủ đích. MỖI hero PHẢI có 3 trục width/height/depth khác nhau hoặc tỉ lệ rõ rệt (cột tháp height ≥ 2× width; panel ngang width ≥ 2× height; đĩa dẹt depth ≤ 0.5; cầu cân đối thì width≈height≈depth nhưng phải ở giá trị có chủ đích như 1.6 hoặc 2.4, KHÔNG phải 1.0).
-- "sizeRanges" BẮT BUỘC LUÔN trả về với đủ 6 field min/max. Mood của bạn lái distribution: scene tĩnh đồng đều thì min≈max nhưng KHÔNG phải 1.0; scene loạn nhịp thì khoảng rộng (vd width 0.4→2.4). Mỗi trục có thể có range khác nhau để tạo silhouette tổng thể (vd height range hẹp + width range rộng = scene "trải ngang").
-- Đa dạng giữa các lần gọi cũng áp cho kích thước: tránh lặp lại cùng range của lần trước.`
-}
-
+// buildUserPrompt sends the mode + (for polish/remix) compressed full scene.
+// Random mode omits currentScene so the LLM starts from blank.
 func buildUserPrompt(mode model.LLMMode, req model.LLMRequest) string {
 	var sb strings.Builder
 	sb.WriteString("mode: ")
 	sb.WriteString(string(mode))
 	sb.WriteString("\n")
 
-	if req.Previous != nil {
-		sb.WriteString("previous: ")
-		b, _ := json.Marshal(req.Previous)
-		sb.Write(b)
-		sb.WriteString("\n")
-	}
-	if req.Scene != nil {
+	if req.CurrentScene != nil {
 		sb.WriteString("currentScene: ")
-		b, _ := json.Marshal(req.Scene)
+		b, _ := json.Marshal(req.CurrentScene)
 		sb.Write(b)
 		sb.WriteString("\n")
 	}
-	sb.WriteString("\nReturn the json direction now.")
+	if req.StrokeCount > 0 {
+		sb.WriteString(fmt.Sprintf("userStrokeCount: %d (user-drawn freehand strokes; bạn KHÔNG được tạo strokes — preserve verbatim)\n", req.StrokeCount))
+	}
+	switch mode {
+	case model.LLMModeRandom:
+		sb.WriteString("\nTạo scene mới hoàn toàn theo brief trên. Output JSON LLMScene v3 ngay.")
+	case model.LLMModePolish:
+		sb.WriteString("\nPolish currentScene: GIỮ phần lớn shape id, chỉ tinh chỉnh color/material/motion/position/size cho hài hoà. Output JSON LLMScene v3 ngay.")
+	case model.LLMModeRemix:
+		sb.WriteString("\nRemix currentScene: TỰ DO đổi palette/layout/hero, có thể thêm/bớt shape; giữ ≥30% id nếu currentScene >4 shape; aiNotes ghi rõ đã đổi gì. Output JSON LLMScene v3 ngay.")
+	}
 	return sb.String()
 }

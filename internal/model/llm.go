@@ -1,7 +1,11 @@
 package model
 
-// LLM "director" layer for the art studio. The Go API is the only place that
-// talks to DeepSeek; the frontend never sees the API key.
+// LLM "art director" layer for the art studio. The Go API is the only place
+// that talks to DeepSeek; the frontend never sees the API key.
+//
+// Schema v3 (AI-first refactor): the LLM authors a full LLMScene — every
+// shape's position/size/color/material/motion is explicit. Frontend just
+// sanitizes + renders.
 
 type LLMMode string
 
@@ -11,71 +15,57 @@ const (
 	LLMModeRemix  LLMMode = "remix"
 )
 
-type LLMSceneSummary struct {
-	PaletteID     string   `json:"paletteId"`
-	CompositionID string   `json:"compositionId,omitempty"`
-	ShapeCount    int      `json:"shapeCount"`
-	Materials     []string `json:"materials,omitempty"`
-	Motions       []string `json:"motions,omitempty"`
-	HasText       bool     `json:"hasText"`
-	Title         string   `json:"title,omitempty"`
+// LLMShape is one renderable primitive. Position is bbox-clamped to
+// x±2.5 / y±1.6 / z±1.0; size axes to [0.3, 4.0]; scale to [0.4, 2.4].
+type LLMShape struct {
+	ID       string     `json:"id"`
+	Shape    string     `json:"shape"`
+	Color    string     `json:"color"`
+	Material string     `json:"material"`
+	Motion   string     `json:"motion"`
+	Position [3]float64 `json:"position"`
+	Size     [3]float64 `json:"size"`
+	Scale    float64    `json:"scale"`
+	Rotation *[3]float64 `json:"rotation,omitempty"`
+	Name     string     `json:"name,omitempty"`
 }
 
-type LLMPreviousHint struct {
-	PaletteID     string `json:"paletteId,omitempty"`
-	CompositionID string `json:"compositionId,omitempty"`
-	TextPhrase    string `json:"textPhrase,omitempty"`
+type LLMText struct {
+	ID       string      `json:"id"`
+	Content  string      `json:"content"`
+	Font     string      `json:"font"`
+	Align    string      `json:"align"`
+	Color    string      `json:"color"`
+	Material string      `json:"material"`
+	Motion   string      `json:"motion"`
+	Position [3]float64  `json:"position"`
+	Scale    float64     `json:"scale"`
+	Rotation *[3]float64 `json:"rotation,omitempty"`
+	Name     string      `json:"name,omitempty"`
 }
 
+type LLMScene struct {
+	Version    int        `json:"version"`
+	Title      string     `json:"title"`
+	PaletteID  string     `json:"paletteId"`
+	Background string     `json:"background,omitempty"`
+	Shapes     []LLMShape `json:"shapes"`
+	Texts      []LLMText  `json:"texts"`
+	AINotes    string     `json:"aiNotes,omitempty"`
+}
+
+// LLMRequest is what the frontend posts on /api/v1/studio/llm/{mode}.
+// CurrentScene is omitted for random mode; full compressed scene for polish/remix.
 type LLMRequest struct {
-	Scene    *LLMSceneSummary `json:"scene,omitempty"`
-	Previous *LLMPreviousHint `json:"previous,omitempty"`
-}
-
-type LLMHeroShape struct {
-	Kind   string  `json:"kind"`
-	Color  string  `json:"color"`
-	Size   float64 `json:"size,omitempty"`
-	Width  float64 `json:"width,omitempty"`
-	Height float64 `json:"height,omitempty"`
-	Depth  float64 `json:"depth,omitempty"`
-	X      float64 `json:"x"`
-	Y      float64 `json:"y"`
-	Z      float64 `json:"z,omitempty"`
-}
-
-// LLMSizeRanges lets the director set per-axis W/H/D ranges for the
-// non-hero shapes the engine generates. Each axis is sampled uniformly
-// within [min, max]. Missing ranges fall back to engine defaults.
-type LLMSizeRanges struct {
-	WidthMin  float64 `json:"widthMin,omitempty"`
-	WidthMax  float64 `json:"widthMax,omitempty"`
-	HeightMin float64 `json:"heightMin,omitempty"`
-	HeightMax float64 `json:"heightMax,omitempty"`
-	DepthMin  float64 `json:"depthMin,omitempty"`
-	DepthMax  float64 `json:"depthMax,omitempty"`
-}
-
-type LLMDirection struct {
-	PaletteID     string         `json:"paletteId"`
-	CompositionID string         `json:"compositionId"`
-	MaterialMood  string         `json:"materialMood"`
-	MotionMood    string         `json:"motionMood"`
-	Title         string         `json:"title"`
-	TextPhrase    string         `json:"textPhrase,omitempty"`
-	ShapeCount    int            `json:"shapeCount,omitempty"`
-	ShapeBias     []string       `json:"shapeBias,omitempty"`
-	HarmonyRule   string         `json:"harmonyRule,omitempty"`
-	Exotic        string         `json:"exotic,omitempty"`
-	Heroes        []LLMHeroShape `json:"heroes,omitempty"`
-	SizeRanges    *LLMSizeRanges `json:"sizeRanges,omitempty"`
+	CurrentScene *LLMScene `json:"currentScene,omitempty"`
+	StrokeCount  int       `json:"strokeCount,omitempty"`
 }
 
 type LLMResponse struct {
-	Direction LLMDirection `json:"direction"`
-	Used      int          `json:"used"`
-	Remaining int          `json:"remaining"`
-	Limit     int          `json:"limit"`
+	Scene     LLMScene `json:"scene"`
+	Used      int      `json:"used"`
+	Remaining int      `json:"remaining"`
+	Limit     int      `json:"limit"`
 }
 
 type LLMQuotaResponse struct {
@@ -87,6 +77,9 @@ type LLMQuotaResponse struct {
 // LLMRequestLog is the row returned by the admin list endpoint.
 // Heavy fields (request_payload/response_raw/parsed_direction) are excluded
 // here; fetch via the detail endpoint.
+//
+// Note: the DB column is still named `parsed_direction` for migration-free
+// compatibility, but its JSON content is now an LLMScene.
 type LLMRequestLog struct {
 	ID               int64   `json:"id"`
 	UserID           string  `json:"userId"`
@@ -106,9 +99,9 @@ type LLMRequestLog struct {
 
 type LLMRequestLogDetail struct {
 	LLMRequestLog
-	RequestPayload  string `json:"requestPayload,omitempty"`
-	ResponseRaw     string `json:"responseRaw,omitempty"`
-	ParsedDirection string `json:"parsedDirection,omitempty"`
+	RequestPayload string `json:"requestPayload,omitempty"`
+	ResponseRaw    string `json:"responseRaw,omitempty"`
+	ParsedScene    string `json:"parsedScene,omitempty"`
 }
 
 type LLMRequestLogListResponse struct {

@@ -23,7 +23,7 @@ type LLMLogInput struct {
 	Temperature      float64
 	RequestPayload   []byte
 	ResponseRaw      []byte
-	ParsedDirection  *model.LLMDirection
+	ParsedScene      *model.LLMScene
 	Status           string
 	ErrorMessage     string
 	LatencyMs        int
@@ -34,13 +34,16 @@ type LLMLogInput struct {
 
 // RecordLLMLog persists one attempt. Errors are non-fatal — logging must
 // never block or fail an LLM call, so callers should fire-and-forget.
+//
+// Note: the DB column is still named `parsed_direction` for migration-free
+// backward compatibility, but its content is now an LLMScene JSON.
 func RecordLLMLog(in LLMLogInput) error {
 	var (
 		parsedJSON []byte
 		err        error
 	)
-	if in.ParsedDirection != nil {
-		parsedJSON, err = json.Marshal(in.ParsedDirection)
+	if in.ParsedScene != nil {
+		parsedJSON, err = json.Marshal(in.ParsedScene)
 		if err != nil {
 			return err
 		}
@@ -194,7 +197,7 @@ func GetLLMLog(id int64) (*model.LLMRequestLogDetail, error) {
 		d.ResponseRaw = responseRaw.String
 	}
 	if parsedDir.Valid {
-		d.ParsedDirection = parsedDir.String
+		d.ParsedScene = parsedDir.String
 	}
 	d.CreatedAt = created.UTC().Format(time.RFC3339)
 	return &d, nil
