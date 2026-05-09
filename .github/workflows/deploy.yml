@@ -12,30 +12,72 @@ concurrency:
 jobs:
   deploy:
     runs-on: ubuntu-latest
-    timeout-minutes: 8
+    timeout-minutes: 12
+    services:
+      mysql:
+        image: mysql:8.0
+        env:
+          MYSQL_ROOT_PASSWORD: rootpw
+          MYSQL_DATABASE: test_x106
+        ports:
+          - 3306:3306
+        options: >-
+          --health-cmd="mysqladmin ping -h 127.0.0.1 -uroot -prootpw"
+          --health-interval=10s
+          --health-timeout=5s
+          --health-retries=10
+
     steps:
       - uses: actions/checkout@v4
 
-      - uses: actions/setup-go@v5
+      - name: Install build deps for mysqlclient
+        run: sudo apt-get update && sudo apt-get install -y pkg-config default-libmysqlclient-dev build-essential
+
+      - name: Set up Python 3.13
+        uses: actions/setup-python@v5
         with:
-          go-version: '1.26'
-          cache: true
+          python-version: "3.13"
 
-      - name: Test
-        run: go test ./...
+      - name: Install uv
+        run: curl -LsSf https://astral.sh/uv/install.sh | sh
 
-      - name: Build linux/amd64
+      - name: Sync dependencies
+        run: |
+          source $HOME/.local/bin/env
+          uv sync --frozen
+
+      - name: Run pytest
         env:
-          CGO_ENABLED: 0
-          GOOS: linux
-          GOARCH: amd64
+          DJANGO_SETTINGS_MODULE: x106.settings.dev
+          DB_HOST: 127.0.0.1
+          DB_PORT: 3306
+          DB_NAME: test_x106
+          DB_USER: root
+          DB_PASSWORD: rootpw
+          REDIS_URL: redis://127.0.0.1:6379/0
+          JWT_SECRET: ci-test-secret
         run: |
-          go build -ldflags="-s -w" -o x106-api ./cmd/server
-          go build -ldflags="-s -w" -o x106-worker ./cmd/worker
+          source $HOME/.local/bin/env
+          uv run pytest -x
 
-      - name: Package
+      - name: Collect static
+        env:
+          DJANGO_SETTINGS_MODULE: x106.settings.production
+          DJANGO_SECRET_KEY: collectstatic-only
+          DB_HOST: 127.0.0.1
+          DB_PORT: 3306
+          DB_NAME: test_x106
+          DB_USER: root
+          DB_PASSWORD: rootpw
         run: |
-          tar czf api-deploy.tar.gz x106-api x106-worker deploy.sh
+          source $HOME/.local/bin/env
+          uv run python manage.py collectstatic --noinput
+
+      - name: Package source
+        run: |
+          tar czf api-deploy.tar.gz \
+            pyproject.toml uv.lock manage.py deploy.sh \
+            x106 apps staticfiles
           ls -lh api-deploy.tar.gz
 
       - name: SCP to VPS
@@ -57,27 +99,41 @@ jobs:
             set -euo pipefail
             APP_DIR=/var/www/api
             API_SERVICE=x106-api
-            WORKER_SERVICE=x106-worker
+            CELERY_SERVICE=x106-celery-worker
+            BEAT_SERVICE=x106-celery-beat
 
+            mkdir -p "$APP_DIR"
             cd "$APP_DIR"
 
-            cp -f x106-api x106-api.bak 2>/dev/null || true
-            cp -f x106-worker x106-worker.bak 2>/dev/null || true
+            # Snapshot the previous source tree once per deploy.
+            rm -rf .prev
+            mkdir -p .prev
+            for d in x106 apps staticfiles; do
+              [ -e "$d" ] && mv "$d" ".prev/$d" || true
+            done
+            for f in pyproject.toml uv.lock manage.py deploy.sh; do
+              [ -e "$f" ] && cp -f "$f" ".prev/$f" || true
+            done
 
             tar xzf /tmp/api-deploy.tar.gz
             rm /tmp/api-deploy.tar.gz
-            chmod +x x106-api x106-worker
+
+            export PATH="$HOME/.local/bin:$PATH"
+            uv sync --frozen
+            uv run python manage.py migrate --noinput
 
             systemctl restart "$API_SERVICE"
             sleep 2
             systemctl is-active --quiet "$API_SERVICE"
             curl -fsSL https://api.pkn.io.vn/api/v1/health -o /dev/null -w 'health HTTP %{http_code}\n'
 
-            if [ -f "/etc/systemd/system/${WORKER_SERVICE}.service" ]; then
-              systemctl restart "$WORKER_SERVICE"
-              sleep 1
-              systemctl is-active --quiet "$WORKER_SERVICE"
-              echo "[api] worker restarted"
-            else
-              echo "[api] WARNING: ${WORKER_SERVICE}.service not installed — async LLM jobs will not be processed"
-            fi
+            for svc in "$CELERY_SERVICE" "$BEAT_SERVICE"; do
+              if [ -f "/etc/systemd/system/${svc}.service" ]; then
+                systemctl restart "$svc"
+                sleep 1
+                systemctl is-active --quiet "$svc"
+                echo "[api] $svc restarted"
+              else
+                echo "[api] WARNING: ${svc}.service not installed"
+              fi
+            done

@@ -1,0 +1,26 @@
+[Unit]
+Description=X106 API (Django + gunicorn)
+After=network.target mysql.service redis-server.service
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/var/www/api
+EnvironmentFile=/etc/x106-api.env
+Environment=DJANGO_SETTINGS_MODULE=x106.settings.production
+Environment=PATH=/root/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+ExecStart=/var/www/api/.venv/bin/gunicorn x106.wsgi:application \
+    --bind 127.0.0.1:4000 \
+    --workers 3 \
+    --threads 4 \
+    --worker-class gthread \
+    --timeout 120 \
+    --access-logfile - \
+    --error-logfile -
+Restart=always
+RestartSec=5
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

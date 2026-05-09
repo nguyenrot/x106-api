@@ -1,33 +1,41 @@
 #!/usr/bin/env bash
-# Manual fallback: extract /tmp/api-deploy.tar.gz built by GitHub Actions,
-# then restart systemd services. Production deploys go through Actions
-# (.github/workflows/deploy.yml). Use this only for emergency rollback
-# or when Actions is unavailable.
+# Manual fallback for the X106 Python API deploy.
+#
+# Production deploys go through GitHub Actions (.github/workflows/deploy.yml),
+# which builds the source tarball + ships it. This script is the "I need to
+# extract and restart by hand" companion: extract /tmp/api-deploy.tar.gz, run
+# `uv sync` + `manage.py migrate`, restart the systemd units. Use only for
+# emergency rollback or when Actions is unavailable.
+
 set -euo pipefail
 
 APP_DIR="/var/www/api"
 API_SERVICE="x106-api"
-WORKER_SERVICE="x106-worker"
+CELERY_SERVICE="x106-celery-worker"
+BEAT_SERVICE="x106-celery-beat"
 ARCHIVE="${1:-/tmp/api-deploy.tar.gz}"
 
 [ -f "$ARCHIVE" ] || { echo "no archive at $ARCHIVE"; exit 1; }
 
 cd "$APP_DIR"
-cp -f x106-api x106-api.bak 2>/dev/null || true
-cp -f x106-worker x106-worker.bak 2>/dev/null || true
-
 tar xzf "$ARCHIVE"
-chmod +x x106-api x106-worker
+
+export PATH="$HOME/.local/bin:$PATH"
+uv sync --frozen
+uv run python manage.py migrate --noinput
 
 systemctl restart "$API_SERVICE"
 sleep 2
 systemctl is-active --quiet "$API_SERVICE"
 curl -fsSL https://api.pkn.io.vn/api/v1/health -o /dev/null
 
-if [ -f "/etc/systemd/system/${WORKER_SERVICE}.service" ]; then
-  systemctl restart "$WORKER_SERVICE"
-  sleep 1
-  systemctl is-active --quiet "$WORKER_SERVICE"
-  echo "[api] worker restarted"
-fi
+for svc in "$CELERY_SERVICE" "$BEAT_SERVICE"; do
+  if [ -f "/etc/systemd/system/${svc}.service" ]; then
+    systemctl restart "$svc"
+    sleep 1
+    systemctl is-active --quiet "$svc"
+    echo "[api] $svc restarted"
+  fi
+done
+
 echo "[api] manual deploy done"

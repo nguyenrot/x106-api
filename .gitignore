@@ -1,6 +1,16 @@
 .env
-bin/
 .DS_Store
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+.pytest_cache/
+.ruff_cache/
+
+# Django
+staticfiles/
 
 # claude code local settings
 .claude/settings.local.json

@@ -1,0 +1,21 @@
+[Unit]
+Description=X106 Celery worker (DeepSeek async LLM jobs)
+After=network.target mysql.service redis-server.service
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/var/www/api
+EnvironmentFile=/etc/x106-api.env
+Environment=DJANGO_SETTINGS_MODULE=x106.settings.production
+Environment=PATH=/root/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+ExecStart=/var/www/api/.venv/bin/celery -A x106 worker -l info \
+    --concurrency=2 \
+    --max-tasks-per-child=50
+Restart=always
+RestartSec=5
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target
