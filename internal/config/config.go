@@ -41,7 +41,7 @@ func Load() *Config {
 		AdminPasswordHash: getEnv("ADMIN_PASSWORD_HASH", ""),
 		DeepSeekAPIKey:    getEnv("DEEPSEEK_API_KEY", ""),
 		DeepSeekBaseURL:   getEnv("DEEPSEEK_BASE_URL", "https://api.deepseek.com"),
-		DeepSeekModel:     getEnv("DEEPSEEK_MODEL", "deepseek-v4-flash"),
+		DeepSeekModel:     getEnv("DEEPSEEK_MODEL", "deepseek-v4-pro"),
 		LLMDailyLimit:     getEnvInt("LLM_DAILY_LIMIT", 5),
 	}
 }

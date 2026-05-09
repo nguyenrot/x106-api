@@ -281,9 +281,11 @@ type deepseekStreamChunk struct {
 
 // streamIdleTimeout: nếu > N giây không thấy chunk mới từ DeepSeek thì coi
 // như stream bị treo và hủy ctx. Total wall budget vẫn bị JobTimeout của
-// worker chặn (220s). Idle giúp fail nhanh khi upstream chết, nhưng vẫn
-// chờ lâu cho dense scene đang generate liên tục.
-const streamIdleTimeout = 30 * time.Second
+// worker chặn (220s). 60s vì v4-pro reasoning chain có thể im lặng 30-50s
+// trước token đầu (model "nghĩ" nội bộ). Một khi token bắt đầu chảy thì
+// emission rate đều ~5-15s/chunk nên 60s đủ rộng cho cả silent-thinking
+// lẫn slow-generating phase.
+const streamIdleTimeout = 60 * time.Second
 
 // Không set Timeout — dùng ctx-based cancellation + idle watchdog. Sync
 // handler path tự cap qua ctx 110s; async worker path cap qua JobTimeout 220s.
