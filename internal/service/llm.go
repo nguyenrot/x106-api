@@ -256,13 +256,13 @@ type deepseekResponse struct {
 	} `json:"error,omitempty"`
 }
 
-// 100s per HTTP call — matches Cloudflare Free tier's hard 100s proxy ceiling.
-// AI-first refactor pushed v4-pro reasoning + full-recipe output past the old
-// 60s budget for polish/remix (which process currentScene + author from
-// scratch). Handler ctx (110s) wraps this with margin for retry on fast-fail
-// (JSON parse), but not for retry-after-timeout — Cloudflare would have
-// already cut us off.
-var deepseekHTTPClient = &http.Client{Timeout: 100 * time.Second}
+// 170s per HTTP call — Cloudflare's 100s proxy ceiling only applies to the
+// SYNC handler path (browser → CF → us); that path's request ctx (110s) caps
+// the call before this timeout matters. The ASYNC worker path (180s JobTimeout)
+// calls DeepSeek server-to-server with no CF in between, so we need headroom
+// past 100s for the dense-default prompt (50–80 shapes ≈ 12k completion
+// tokens; v4-pro reasoning chain pushes wall time to 100–150s on cold runs).
+var deepseekHTTPClient = &http.Client{Timeout: 170 * time.Second}
 
 func callDeepSeek(ctx context.Context, cfg *config.Config, userID, username string, mode model.LLMMode, req model.LLMRequest) (model.LLMScene, error) {
 	systemPrompt := buildSystemPrompt()

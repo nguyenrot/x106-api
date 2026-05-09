@@ -12,15 +12,18 @@ import (
 )
 
 // JobTimeout caps how long a single DeepSeek call can take inside the worker.
-// 180s is safe because the worker isn't fronted by Cloudflare — only the API's
-// http handler chain has the 100s ceiling. Worth ~3× v4-pro reasoning + retry.
-const JobTimeout = 180 * time.Second
+// 220s gives a 50s buffer over the deepseek HTTP client (170s) so a single
+// attempt that runs to its own timeout still has room to flush the error log
+// + record the row. Worker isn't fronted by Cloudflare so we're not tied to
+// the 100s proxy ceiling. Dense-default prompt (50–80 shapes) pushes v4-pro
+// wall time to 100–150s typically.
+const JobTimeout = 220 * time.Second
 
 // StaleJobAge: a "processing" row older than this is assumed orphaned (worker
 // crashed mid-job, OS killed the process, etc) and gets recovered on every
 // recovery tick. Slightly larger than JobTimeout so we don't race with a slow
 // but still-alive worker.
-const StaleJobAge = 240 * time.Second
+const StaleJobAge = 280 * time.Second
 
 // Run drives the polling loop. Returns only when ctx is canceled. Each
 // iteration: try to claim a pending job, run it, mark the outcome. When the
