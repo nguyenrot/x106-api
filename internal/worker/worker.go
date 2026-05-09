@@ -12,18 +12,19 @@ import (
 )
 
 // JobTimeout caps how long a single DeepSeek call can take inside the worker.
-// 220s gives a 50s buffer over the deepseek HTTP client (170s) so a single
-// attempt that runs to its own timeout still has room to flush the error log
-// + record the row. Worker isn't fronted by Cloudflare so we're not tied to
-// the 100s proxy ceiling. Dense-default prompt (50–80 shapes) pushes v4-pro
-// wall time to 100–150s typically.
-const JobTimeout = 220 * time.Second
+// 600s = 10 phút — generous cap để v4-pro reasoning chain dày có thể chạy
+// trọn không bị backend cancel; UI lock toàn màn hình lúc aiBusy nên user
+// không tương tác được giữa chừng. Nếu stream thật sự treo (không emit token
+// 60s+) thì idle watchdog trong llm.go đã abort sạch trước khi chạm cap này.
+// Cap chỉ là safety net cho trường hợp HTTP-2 keepalive hijacked, OS nuốt
+// goroutine, etc.
+const JobTimeout = 600 * time.Second
 
 // StaleJobAge: a "processing" row older than this is assumed orphaned (worker
 // crashed mid-job, OS killed the process, etc) and gets recovered on every
 // recovery tick. Slightly larger than JobTimeout so we don't race with a slow
 // but still-alive worker.
-const StaleJobAge = 280 * time.Second
+const StaleJobAge = 720 * time.Second
 
 // Run drives the polling loop. Returns only when ctx is canceled. Each
 // iteration: try to claim a pending job, run it, mark the outcome. When the
