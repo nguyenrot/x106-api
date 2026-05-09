@@ -1,8 +1,8 @@
 """DeepSeek streaming client + scene-call orchestration.
 
-Mirrors internal/service/llm.go:callDeepSeek/doDeepSeekCall — same SSE parsing,
-same idle watchdog (60s without a chunk → abort), same retry policy (one retry
-on upstream errors with stricter prompt + lower temp).
+Uses the official `openai` SDK against DeepSeek's OpenAI-compatible endpoint.
+Same idle watchdog (60s without a chunk → abort), same retry policy (one retry
+on upstream errors with stricter prompt + lower temp), same audit log.
 """
 
 from __future__ import annotations
@@ -12,10 +12,10 @@ import logging
 import time
 from dataclasses import dataclass
 from decimal import Decimal
-from typing import Any
 
 import httpx
 from django.conf import settings
+from openai import APIConnectionError, APIStatusError, APITimeoutError, OpenAI
 
 from ..errors import (
     LLMDisabledError,
@@ -34,6 +34,20 @@ log = logging.getLogger("x106.studio.deepseek")
 STREAM_IDLE_TIMEOUT = 60.0  # seconds
 MAX_TOKENS = 16_384
 LOG_TRUNCATE = 600
+
+_client: OpenAI | None = None
+
+
+def _get_client() -> OpenAI:
+    global _client
+    if _client is None:
+        _client = OpenAI(
+            api_key=settings.DEEPSEEK_API_KEY,
+            base_url=settings.DEEPSEEK_BASE_URL,
+            timeout=httpx.Timeout(connect=10.0, read=None, write=30.0, pool=10.0),
+            max_retries=0,
+        )
+    return _client
 
 
 @dataclass
@@ -79,40 +93,8 @@ def _record_log(ctx: _CallContext) -> None:
         log.warning("could not record llm log: %s", exc)
 
 
-def _stream_chunks(resp: httpx.Response):
-    """Yield decoded chunk dicts from an SSE response.
-
-    Tracks last-chunk time and raises LLMTimeoutError if no chunk arrives within
-    STREAM_IDLE_TIMEOUT. Lines that aren't valid SSE are skipped (DeepSeek
-    occasionally interleaves keepalive frames).
-    """
-    last_activity = time.monotonic()
-    for raw_line in resp.iter_lines():
-        now = time.monotonic()
-        if now - last_activity > STREAM_IDLE_TIMEOUT:
-            raise LLMTimeoutError(f"stream idle > {STREAM_IDLE_TIMEOUT}s")
-        last_activity = now
-        line = (raw_line or "").strip()
-        if not line or line.startswith(":"):
-            continue
-        if not line.startswith("data:"):
-            continue
-        payload = line[5:].strip()
-        if payload == "[DONE]":
-            break
-        try:
-            yield json.loads(payload)
-        except json.JSONDecodeError:
-            continue
-
-
 def _do_call(ctx: _CallContext, system_prompt: str, user_prompt: str) -> dict:
-    headers = {
-        "Authorization": f"Bearer {settings.DEEPSEEK_API_KEY}",
-        "Content-Type": "application/json",
-        "Accept": "text/event-stream",
-    }
-    body: dict[str, Any] = {
+    params = {
         "model": ctx.model,
         "messages": [
             {"role": "system", "content": system_prompt},
@@ -124,57 +106,54 @@ def _do_call(ctx: _CallContext, system_prompt: str, user_prompt: str) -> dict:
         "stream": True,
         "stream_options": {"include_usage": True},
     }
-    ctx.request_payload = body
+    ctx.request_payload = params
 
     start = time.monotonic()
     content_parts: list[str] = []
     finish_reason = ""
     chunk_count = 0
-    upstream_error = ""
 
     try:
-        with httpx.stream(
-            "POST",
-            f"{settings.DEEPSEEK_BASE_URL}/chat/completions",
-            json=body,
-            headers=headers,
-            timeout=httpx.Timeout(connect=10.0, read=None, write=30.0, pool=10.0),
-        ) as resp:
-            if resp.status_code < 200 or resp.status_code >= 300:
-                raw = resp.read().decode("utf-8", errors="replace")
-                ctx.response_raw = raw
-                ctx.status = f"upstream_{resp.status_code}"
-                ctx.error_message = raw[:LOG_TRUNCATE]
-                ctx.latency_ms = int((time.monotonic() - start) * 1000)
-                raise LLMUpstreamError(f"upstream status={resp.status_code}: {raw[:200]}")
+        stream = _get_client().chat.completions.create(**params)
+        last_activity = time.monotonic()
+        for chunk in stream:
+            now = time.monotonic()
+            if now - last_activity > STREAM_IDLE_TIMEOUT:
+                raise LLMTimeoutError(f"stream idle > {STREAM_IDLE_TIMEOUT}s")
+            last_activity = now
+            chunk_count += 1
 
-            for chunk in _stream_chunks(resp):
-                chunk_count += 1
-                if isinstance(chunk.get("error"), dict):
-                    upstream_error = chunk["error"].get("message", "")
-                    break
-                if isinstance(chunk.get("usage"), dict):
-                    usage = chunk["usage"]
-                    ctx.prompt_tokens = int(usage.get("prompt_tokens", 0))
-                    ctx.completion_tokens = int(usage.get("completion_tokens", 0))
-                    ctx.total_tokens = int(usage.get("total_tokens", 0))
-                for choice in chunk.get("choices", []):
-                    delta = (choice.get("delta") or {}).get("content")
-                    if delta:
-                        content_parts.append(delta)
-                    fr = choice.get("finish_reason")
-                    if fr:
-                        finish_reason = fr
-    except httpx.TimeoutException as exc:
+            usage = getattr(chunk, "usage", None)
+            if usage is not None:
+                ctx.prompt_tokens = int(getattr(usage, "prompt_tokens", 0) or 0)
+                ctx.completion_tokens = int(getattr(usage, "completion_tokens", 0) or 0)
+                ctx.total_tokens = int(getattr(usage, "total_tokens", 0) or 0)
+
+            for choice in chunk.choices or []:
+                delta = getattr(choice, "delta", None)
+                if delta is not None and delta.content:
+                    content_parts.append(delta.content)
+                if choice.finish_reason:
+                    finish_reason = choice.finish_reason
+    except APIStatusError as exc:
+        body_text = ""
+        if exc.body is not None:
+            body_text = exc.body if isinstance(exc.body, str) else json.dumps(exc.body, default=str)
+        ctx.status = f"upstream_{exc.status_code}"
+        ctx.error_message = (exc.message or body_text)[:LOG_TRUNCATE]
+        ctx.response_raw = body_text
+        ctx.latency_ms = int((time.monotonic() - start) * 1000)
+        raise LLMUpstreamError(f"upstream status={exc.status_code}: {body_text[:200]}") from exc
+    except APITimeoutError as exc:
         ctx.status = "timeout"
         ctx.error_message = str(exc)
         ctx.latency_ms = int((time.monotonic() - start) * 1000)
         raise LLMTimeoutError(str(exc)) from exc
-    except httpx.HTTPError as exc:
+    except APIConnectionError as exc:
         ctx.status = "http_error"
         ctx.error_message = str(exc)
         ctx.latency_ms = int((time.monotonic() - start) * 1000)
-        raise LLMUpstreamError(f"http error: {exc}") from exc
+        raise LLMUpstreamError(f"connection error: {exc}") from exc
     except LLMTimeoutError:
         ctx.status = "stream_idle_timeout"
         ctx.error_message = f"idle>{STREAM_IDLE_TIMEOUT}s after {chunk_count} chunks"
@@ -182,11 +161,6 @@ def _do_call(ctx: _CallContext, system_prompt: str, user_prompt: str) -> dict:
         raise
 
     ctx.latency_ms = int((time.monotonic() - start) * 1000)
-
-    if upstream_error:
-        ctx.status = "upstream_error"
-        ctx.error_message = upstream_error
-        raise LLMUpstreamError(upstream_error)
 
     content = "".join(content_parts)
     ctx.response_raw = content
