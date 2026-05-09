@@ -54,6 +54,8 @@ class Artwork(models.Model):
     scene = models.JSONField(db_column="scene_json")
     thumbnail_data_url = models.TextField()  # MEDIUMTEXT in MySQL — left untouched
     asset_data_url = models.TextField(null=True, blank=True)
+    # Public share token: presence = artwork is shared via /v/<token>; null = private.
+    share_token = models.CharField(max_length=48, null=True, blank=True, unique=True)
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 

@@ -68,10 +68,11 @@ class ArtworkSerializer(serializers.ModelSerializer):
             "scene",
             "thumbnail_data_url",
             "asset_data_url",
+            "share_token",
             "created_at",
             "updated_at",
         ]
-        read_only_fields = ["id", "user_id", "created_at", "updated_at"]
+        read_only_fields = ["id", "user_id", "share_token", "created_at", "updated_at"]
 
     def validate_title(self, value: str) -> str:
         return clamp_runes(value, MAX_TITLE)
@@ -138,6 +139,27 @@ class ArtworkSerializer(serializers.ModelSerializer):
         if not attrs.get("title"):
             attrs["title"] = attrs.get("prompt") or "Digital artwork"
         return attrs
+
+
+class PublicArtworkSerializer(serializers.ModelSerializer):
+    """Read-only shape returned by /api/v1/public/artworks/<token>.
+
+    Strips user_id and storage-only fields; exposes owner_username so the viewer
+    UI can attribute the snapshot."""
+
+    owner_username = serializers.CharField(source="user.username", read_only=True)
+
+    class Meta:
+        model = Artwork
+        fields = [
+            "id",
+            "title",
+            "scene",
+            "thumbnail_data_url",
+            "created_at",
+            "owner_username",
+        ]
+        read_only_fields = fields
 
 
 # ─── LLM ──────────────────────────────────────────────────────────────────

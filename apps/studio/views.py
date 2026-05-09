@@ -8,13 +8,15 @@ holds an HTTP request open longer than ~1s.
 from __future__ import annotations
 
 import logging
+import secrets
 
 from django.conf import settings
 from django.utils import timezone
 from rest_framework import status, viewsets
 from rest_framework.decorators import action
-from rest_framework.permissions import IsAuthenticated
+from rest_framework.permissions import AllowAny, IsAuthenticated
 from rest_framework.response import Response
+from rest_framework.views import APIView
 
 from apps.core.ids import new_id
 
@@ -29,6 +31,7 @@ from .serializers import (
     ArtworkSerializer,
     LLMQuotaSerializer,
     LLMSubmitSerializer,
+    PublicArtworkSerializer,
 )
 from .settings_keys import effective_daily_limit, llm_enabled
 from .tasks import run_llm_job
@@ -51,6 +54,57 @@ class ArtworkViewSet(viewsets.ModelViewSet):
 
     def perform_create(self, serializer):
         serializer.save(user=self.request.user, id=new_id())
+
+    @action(detail=True, methods=["post", "delete"], url_path="share")
+    def share(self, request, pk: str | None = None):
+        """POST → ensure a share token exists (idempotent); DELETE → revoke.
+
+        Token is `secrets.token_urlsafe(16)` (≈22 url-safe chars, 128 bits of
+        entropy). Returns `{shareToken, shareUrl}` on POST, `{shareToken: null}`
+        on DELETE."""
+        artwork = self.get_queryset().filter(pk=pk).first()
+        if artwork is None:
+            return Response({"error": "not found"}, status=status.HTTP_404_NOT_FOUND)
+
+        if request.method == "DELETE":
+            if artwork.share_token:
+                artwork.share_token = None
+                artwork.save(update_fields=["share_token", "updated_at"])
+            return Response({"shareToken": None})
+
+        if not artwork.share_token:
+            # Retry on the (vanishingly rare) UNIQUE collision instead of bubbling up a 500.
+            for _ in range(5):
+                token = secrets.token_urlsafe(16)
+                artwork.share_token = token
+                try:
+                    artwork.save(update_fields=["share_token", "updated_at"])
+                    break
+                except Exception:  # IntegrityError + driver-specific subclasses
+                    artwork.share_token = None
+            else:
+                return Response(
+                    {"error": "could not allocate share token"},
+                    status=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                )
+        return Response({"shareToken": artwork.share_token})
+
+
+class PublicArtworkView(APIView):
+    """GET /api/v1/public/artworks/<token> — anonymous, returns scene + minimal metadata."""
+
+    permission_classes = [AllowAny]
+    authentication_classes: list = []
+
+    def get(self, _request, token: str):
+        artwork = (
+            Artwork.objects.select_related("user")
+            .filter(share_token=token)
+            .first()
+        )
+        if artwork is None:
+            return Response({"error": "not found"}, status=status.HTTP_404_NOT_FOUND)
+        return Response(PublicArtworkSerializer(artwork).data)
 
 
 def _quota_payload(user_id: str) -> dict:
