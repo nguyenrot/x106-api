@@ -43,7 +43,11 @@ class ArtworkViewSet(viewsets.ModelViewSet):
     pagination_class = None
 
     def get_queryset(self):
-        return Artwork.objects.filter(user=self.request.user).order_by("-created_at")[:60]
+        # Slice only on list — retrieve/destroy need an unsliced queryset for .get(pk=...)
+        qs = Artwork.objects.filter(user=self.request.user).order_by("-created_at")
+        if self.action == "list":
+            return qs[:60]
+        return qs
 
     def perform_create(self, serializer):
         serializer.save(user=self.request.user, id=new_id())

@@ -19,6 +19,10 @@ from .errors import LLMOffError, LLMUpstreamError, SceneValidationError
 from .models import LLMJob, LLMJobStatus
 from .services.deepseek import call_deepseek
 
+# Load sibling task modules so Celery's autodiscover (which only imports
+# `tasks.py` per INSTALLED_APP) sees the beat-scheduled maintenance tasks.
+from . import maintenance  # noqa: F401
+
 log = logging.getLogger("x106.studio.tasks")
 
 
