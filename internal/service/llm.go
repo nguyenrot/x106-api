@@ -79,7 +79,7 @@ const (
 	llmAINotesMaxRunes = 200
 	llmTextMaxRunes    = 120
 	llmSceneVersion    = 3
-	llmShapeMaxCount   = 16
+	llmShapeMaxCount   = 100
 	llmShapeMinCount   = 1
 	llmTextMaxCount    = 4
 )
@@ -301,9 +301,10 @@ func doDeepSeekCall(
 			{Role: "user", Content: userPrompt},
 		},
 		ResponseFormat: map[string]string{"type": "json_object"},
-		// Full-recipe JSON for 12 shapes ≈ 1.4k tokens. v4-pro's reasoning
-		// chain eats 2–3× internal tokens. 8192 leaves comfortable margin.
-		MaxTokens:   8192,
+		// Full-recipe JSON for 100 shapes ≈ 12k tokens. v4-pro's reasoning
+		// chain eats 2–3× internal tokens on top. 16384 leaves margin so the
+		// JSON tail isn't truncated when the LLM packs the cap.
+		MaxTokens:   16384,
 		Temperature: temperature,
 	}
 	buf, _ := json.Marshal(body)
@@ -691,7 +692,7 @@ Bạn được phép TỰ DO mix — ví dụ "ring of 4 + 1 center + 1 floating
   "title": "<tiếng Việt, ≤ 40 ký tự, có thể dùng ' · '>",
   "paletteId": "<one of 10 above>",
   "background": "<optional override hex; bỏ trống = dùng background mặc định của palette>",
-  "shapes": [   // 4–12 thường, 1–16 hard cap
+  "shapes": [   // 6–40 thường, 1–100 hard cap (scene đông >50 shapes nên ưu tiên cluster + tỉ lệ chênh)
     {
       "id": "s_0",
       "shape": "sphere|box|torus|knot|panel|cone|cylinder|capsule|icosahedron|octahedron|disc",
@@ -725,7 +726,7 @@ Bạn được phép TỰ DO mix — ví dụ "ring of 4 + 1 center + 1 floating
 ` + "```" + `
 
 **RÀNG BUỘC TUYỆT ĐỐI**:
-- shapes BẮT BUỘC ≥ 1 (thường 4–12). version PHẢI = 3.
+- shapes BẮT BUỘC ≥ 1, hard cap 100 (thường 6–40; scene đông >50 cần spacing chặt hơn để khỏi nuốt nhau). version PHẢI = 3.
 - size MỖI shape PHẢI có 3 giá trị > 0, KHÔNG được [1,1,1] đồng đều cho > 50% scene.
 - Position trong bbox; tự clamp nếu sát biên.
 - texts dùng tiếng Việt thơ ca, ngắn gọn.
