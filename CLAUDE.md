@@ -18,7 +18,11 @@ make clean    # rm -rf bin
 
 ### Deploy
 
-`./deploy.sh [ref]` runs *on the VPS* (invoked remotely by `../deploy.sh api`). It pulls `origin/main` (or the supplied ref), runs `go test ./...`, builds `x106-api`, atomically swaps the binary, and restarts `x106-api.service`. It then health-checks `https://api.pkn.io.vn/api/v1/health` before exiting.
+`git push` to `main` triggers `.github/workflows/deploy.yml` → Actions runs `go test ./...`, cross-builds linux/amd64 binaries (`x106-api` + `x106-worker`) with `-ldflags="-s -w"`, SCPs the tar to the VPS, swaps the binaries with `.bak` fallback, and `systemctl restart`s both services. End-to-end ~60s. The worker restart is guarded on `/etc/systemd/system/x106-worker.service` existing.
+
+Re-trigger / rollback to a branch or tag: `cd /Users/kynguyenpham/X106 && ./deploy.sh api [ref]`. SHA-direct rollback isn't supported by `gh workflow run` — tag the commit first.
+
+`./deploy.sh` (this repo's local file at `/var/www/api/deploy.sh`) is now a manual fallback only — it expects the tar at `/tmp/api-deploy.tar.gz` and just extracts + `systemctl restart`s. The VPS no longer needs Go installed for normal deploys.
 
 ### Migrations on the VPS
 
