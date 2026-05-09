@@ -97,11 +97,11 @@ class PublicArtworkView(APIView):
     authentication_classes: list = []
 
     def get(self, _request, token: str):
-        artwork = (
-            Artwork.objects.select_related("user")
-            .filter(share_token=token)
-            .first()
-        )
+        # No select_related("user"): the legacy `users.id` is utf8mb4_0900_ai_ci
+        # while `artworks.user_id` is utf8mb4_unicode_ci, so any JOIN on those
+        # raises 1267. The serializer's `source="user.username"` triggers a lazy
+        # single-table lookup, which is fine.
+        artwork = Artwork.objects.filter(share_token=token).first()
         if artwork is None:
             return Response({"error": "not found"}, status=status.HTTP_404_NOT_FOUND)
         return Response(PublicArtworkSerializer(artwork).data)
