@@ -1,0 +1,83 @@
+name: Deploy API to VPS
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: deploy-api
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.26'
+          cache: true
+
+      - name: Test
+        run: go test ./...
+
+      - name: Build linux/amd64
+        env:
+          CGO_ENABLED: 0
+          GOOS: linux
+          GOARCH: amd64
+        run: |
+          go build -ldflags="-s -w" -o x106-api ./cmd/server
+          go build -ldflags="-s -w" -o x106-worker ./cmd/worker
+
+      - name: Package
+        run: |
+          tar czf api-deploy.tar.gz x106-api x106-worker deploy.sh
+          ls -lh api-deploy.tar.gz
+
+      - name: SCP to VPS
+        uses: appleboy/scp-action@v0.1.7
+        with:
+          host: ${{ secrets.VPS_HOST }}
+          username: root
+          key: ${{ secrets.VPS_SSH_KEY }}
+          source: api-deploy.tar.gz
+          target: /tmp/
+
+      - name: Extract + restart on VPS
+        uses: appleboy/ssh-action@v1.2.0
+        with:
+          host: ${{ secrets.VPS_HOST }}
+          username: root
+          key: ${{ secrets.VPS_SSH_KEY }}
+          script: |
+            set -euo pipefail
+            APP_DIR=/var/www/api
+            API_SERVICE=x106-api
+            WORKER_SERVICE=x106-worker
+
+            cd "$APP_DIR"
+
+            cp -f x106-api x106-api.bak 2>/dev/null || true
+            cp -f x106-worker x106-worker.bak 2>/dev/null || true
+
+            tar xzf /tmp/api-deploy.tar.gz
+            rm /tmp/api-deploy.tar.gz
+            chmod +x x106-api x106-worker
+
+            systemctl restart "$API_SERVICE"
+            sleep 2
+            systemctl is-active --quiet "$API_SERVICE"
+            curl -fsSL https://api.pkn.io.vn/api/v1/health -o /dev/null -w 'health HTTP %{http_code}\n'
+
+            if [ -f "/etc/systemd/system/${WORKER_SERVICE}.service" ]; then
+              systemctl restart "$WORKER_SERVICE"
+              sleep 1
+              systemctl is-active --quiet "$WORKER_SERVICE"
+              echo "[api] worker restarted"
+            else
+              echo "[api] WARNING: ${WORKER_SERVICE}.service not installed — async LLM jobs will not be processed"
+            fi
