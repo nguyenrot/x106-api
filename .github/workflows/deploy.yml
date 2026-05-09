@@ -33,10 +33,10 @@ jobs:
       - name: Install build deps for mysqlclient
         run: sudo apt-get update && sudo apt-get install -y pkg-config default-libmysqlclient-dev build-essential
 
-      - name: Set up Python 3.13
+      - name: Set up Python 3.12
         uses: actions/setup-python@v5
         with:
-          python-version: "3.13"
+          python-version: "3.12"
 
       - name: Install uv
         run: curl -LsSf https://astral.sh/uv/install.sh | sh

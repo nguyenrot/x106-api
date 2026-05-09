@@ -27,7 +27,7 @@ systemctl enable --now redis-server
 curl -LsSf https://astral.sh/uv/install.sh | sh   # installs uv to /root/.local/bin
 ```
 
-`/etc/x106-api.env` should contain (sample — fill in real secrets):
+`/var/www/api/.env` should contain (sample — fill in real secrets):
 
 ```
 DJANGO_ENV=production

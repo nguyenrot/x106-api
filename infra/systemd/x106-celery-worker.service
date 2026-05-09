@@ -6,7 +6,7 @@ After=network.target mysql.service redis-server.service
 Type=simple
 User=root
 WorkingDirectory=/var/www/api
-EnvironmentFile=/etc/x106-api.env
+EnvironmentFile=/var/www/api/.env
 Environment=DJANGO_SETTINGS_MODULE=x106.settings.production
 Environment=PATH=/root/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 ExecStart=/var/www/api/.venv/bin/celery -A x106 worker -l info \
