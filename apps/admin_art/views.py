@@ -7,7 +7,7 @@ Django staff session, enforced via the IsAdminToken permission class.
 
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, timezone as dt_timezone
 from decimal import Decimal
 
 from django.utils import timezone
@@ -48,8 +48,8 @@ def _iso_or_blank(dt) -> str:
     if not isinstance(dt, datetime):
         return ""
     if timezone.is_naive(dt):
-        dt = timezone.make_aware(dt, timezone.utc)
-    return dt.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+        dt = timezone.make_aware(dt, dt_timezone.utc)
+    return dt.astimezone(dt_timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
 def _settings_payload() -> dict:
