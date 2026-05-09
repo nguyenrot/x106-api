@@ -1,6 +1,7 @@
 package service
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"database/sql"
@@ -12,6 +13,7 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/pkn/api/internal/config"
@@ -230,11 +232,17 @@ type deepseekMessage struct {
 }
 
 type deepseekRequest struct {
-	Model          string            `json:"model"`
-	Messages       []deepseekMessage `json:"messages"`
-	ResponseFormat map[string]string `json:"response_format,omitempty"`
-	MaxTokens      int               `json:"max_tokens"`
-	Temperature    float64           `json:"temperature"`
+	Model          string                `json:"model"`
+	Messages       []deepseekMessage     `json:"messages"`
+	ResponseFormat map[string]string     `json:"response_format,omitempty"`
+	MaxTokens      int                   `json:"max_tokens"`
+	Temperature    float64               `json:"temperature"`
+	Stream         bool                  `json:"stream,omitempty"`
+	StreamOptions  *deepseekStreamOpts   `json:"stream_options,omitempty"`
+}
+
+type deepseekStreamOpts struct {
+	IncludeUsage bool `json:"include_usage"`
 }
 
 type deepseekChoice struct {
@@ -256,13 +264,30 @@ type deepseekResponse struct {
 	} `json:"error,omitempty"`
 }
 
-// 170s per HTTP call — Cloudflare's 100s proxy ceiling only applies to the
-// SYNC handler path (browser → CF → us); that path's request ctx (110s) caps
-// the call before this timeout matters. The ASYNC worker path (180s JobTimeout)
-// calls DeepSeek server-to-server with no CF in between, so we need headroom
-// past 100s for the dense-default prompt (50–80 shapes ≈ 12k completion
-// tokens; v4-pro reasoning chain pushes wall time to 100–150s on cold runs).
-var deepseekHTTPClient = &http.Client{Timeout: 170 * time.Second}
+// SSE chunk shape for streamed responses (OpenAI-compatible).
+type deepseekStreamChunk struct {
+	Choices []struct {
+		Delta struct {
+			Content string `json:"content"`
+		} `json:"delta"`
+		FinishReason string `json:"finish_reason"`
+	} `json:"choices"`
+	Usage *deepseekUsage `json:"usage"`
+	Error *struct {
+		Message string `json:"message"`
+		Type    string `json:"type"`
+	} `json:"error,omitempty"`
+}
+
+// streamIdleTimeout: nếu > N giây không thấy chunk mới từ DeepSeek thì coi
+// như stream bị treo và hủy ctx. Total wall budget vẫn bị JobTimeout của
+// worker chặn (220s). Idle giúp fail nhanh khi upstream chết, nhưng vẫn
+// chờ lâu cho dense scene đang generate liên tục.
+const streamIdleTimeout = 30 * time.Second
+
+// Không set Timeout — dùng ctx-based cancellation + idle watchdog. Sync
+// handler path tự cap qua ctx 110s; async worker path cap qua JobTimeout 220s.
+var deepseekHTTPClient = &http.Client{Timeout: 0}
 
 func callDeepSeek(ctx context.Context, cfg *config.Config, userID, username string, mode model.LLMMode, req model.LLMRequest) (model.LLMScene, error) {
 	systemPrompt := buildSystemPrompt()
@@ -301,11 +326,12 @@ func doDeepSeekCall(
 			{Role: "user", Content: userPrompt},
 		},
 		ResponseFormat: map[string]string{"type": "json_object"},
-		// Full-recipe JSON for 100 shapes ≈ 12k tokens. v4-pro's reasoning
-		// chain eats 2–3× internal tokens on top. 16384 leaves margin so the
-		// JSON tail isn't truncated when the LLM packs the cap.
-		MaxTokens:   16384,
-		Temperature: temperature,
+		// Full-recipe JSON for 80 shapes ≈ 12k tokens. 16384 cap để JSON tail
+		// không bị cắt khi LLM đẩy gần max output.
+		MaxTokens:     16384,
+		Temperature:   temperature,
+		Stream:        true,
+		StreamOptions: &deepseekStreamOpts{IncludeUsage: true},
 	}
 	buf, _ := json.Marshal(body)
 
@@ -329,18 +355,24 @@ func doDeepSeekCall(
 		}
 	}()
 
-	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, cfg.DeepSeekBaseURL+"/chat/completions", bytes.NewReader(buf))
+	// Wrap parent ctx với cancellable child — idle watchdog hủy stream nếu
+	// không thấy chunk mới trong streamIdleTimeout.
+	streamCtx, cancelStream := context.WithCancel(ctx)
+	defer cancelStream()
+
+	httpReq, err := http.NewRequestWithContext(streamCtx, http.MethodPost, cfg.DeepSeekBaseURL+"/chat/completions", bytes.NewReader(buf))
 	if err != nil {
 		logIn.Status = "request_build_error"
 		logIn.ErrorMessage = err.Error()
 		return model.LLMScene{}, err
 	}
 	httpReq.Header.Set("Content-Type", "application/json")
+	httpReq.Header.Set("Accept", "text/event-stream")
 	httpReq.Header.Set("Authorization", "Bearer "+cfg.DeepSeekAPIKey)
 
 	resp, err := deepseekHTTPClient.Do(httpReq)
 	if err != nil {
-		if errors.Is(err, context.DeadlineExceeded) {
+		if errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled) {
 			logIn.Status = "timeout"
 			logIn.ErrorMessage = err.Error()
 			return model.LLMScene{}, ErrLLMTimeout
@@ -352,50 +384,148 @@ func doDeepSeekCall(
 	}
 	defer resp.Body.Close()
 
-	raw, readErr := io.ReadAll(resp.Body)
-	logIn.ResponseRaw = raw
-	if readErr != nil {
-		if errors.Is(readErr, context.DeadlineExceeded) || errors.Is(readErr, context.Canceled) || ctx.Err() != nil {
-			logIn.Status = "timeout"
-			logIn.ErrorMessage = readErr.Error()
-			return model.LLMScene{}, ErrLLMTimeout
-		}
-		log.Printf("[llm] body read error: %v", readErr)
-		logIn.Status = "body_read_error"
-		logIn.ErrorMessage = readErr.Error()
-		return model.LLMScene{}, fmt.Errorf("%w: read body: %v", ErrLLMUpstream, readErr)
-	}
+	// Non-2xx → đọc full body + return error.
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		raw, _ := io.ReadAll(resp.Body)
+		logIn.ResponseRaw = raw
 		log.Printf("[llm] upstream %d: %s", resp.StatusCode, truncateForLog(raw))
 		logIn.Status = fmt.Sprintf("upstream_%d", resp.StatusCode)
 		logIn.ErrorMessage = string(raw)
 		return model.LLMScene{}, fmt.Errorf("%w: status=%d", ErrLLMUpstream, resp.StatusCode)
 	}
 
-	var ds deepseekResponse
-	if err := json.Unmarshal(raw, &ds); err != nil {
-		log.Printf("[llm] parse top-level: %v body=%s", err, truncateForLog(raw))
-		logIn.Status = "parse_error"
-		logIn.ErrorMessage = err.Error()
-		return model.LLMScene{}, fmt.Errorf("%w: parse: %v", ErrLLMUpstream, err)
+	// Idle watchdog: theo dõi lastActivity, hủy ctx nếu idle > streamIdleTimeout.
+	var (
+		muActivity     sync.Mutex
+		lastActivity   = time.Now()
+		watchdogClosed = make(chan struct{})
+	)
+	markActivity := func() {
+		muActivity.Lock()
+		lastActivity = time.Now()
+		muActivity.Unlock()
 	}
-	logIn.PromptTokens = ds.Usage.PromptTokens
-	logIn.CompletionTokens = ds.Usage.CompletionTokens
-	logIn.TotalTokens = ds.Usage.TotalTokens
+	go func() {
+		defer close(watchdogClosed)
+		ticker := time.NewTicker(2 * time.Second)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-streamCtx.Done():
+				return
+			case <-ticker.C:
+				muActivity.Lock()
+				idle := time.Since(lastActivity)
+				muActivity.Unlock()
+				if idle > streamIdleTimeout {
+					cancelStream()
+					return
+				}
+			}
+		}
+	}()
 
-	if ds.Error != nil {
-		log.Printf("[llm] upstream error: %s", ds.Error.Message)
-		logIn.Status = "upstream_error"
-		logIn.ErrorMessage = ds.Error.Message
-		return model.LLMScene{}, fmt.Errorf("%w: %s", ErrLLMUpstream, ds.Error.Message)
+	// Đọc SSE từng dòng. Mỗi event:
+	//   data: {"choices":[{"delta":{"content":"..."}}],"usage":{...}}
+	// hoặc
+	//   data: [DONE]
+	// 1MB read buffer — SSE chunks thường < 4 KB nhưng đề phòng line dài.
+	reader := bufio.NewReaderSize(resp.Body, 1024*1024)
+	var (
+		contentBuf   strings.Builder
+		rawBuf       bytes.Buffer
+		usage        deepseekUsage
+		streamErrMsg string
+		finishReason string
+		chunkCount   int
+	)
+
+	for {
+		line, readErr := reader.ReadString('\n')
+		// markActivity sau mỗi attempt đọc — kể cả lỗi tạm hay keepalive.
+		markActivity()
+		if len(line) > 0 {
+			rawBuf.WriteString(line)
+		}
+		if readErr != nil {
+			if readErr == io.EOF {
+				break
+			}
+			if errors.Is(readErr, context.DeadlineExceeded) || errors.Is(readErr, context.Canceled) || streamCtx.Err() != nil {
+				logIn.Status = "stream_idle_timeout"
+				logIn.ResponseRaw = rawBuf.Bytes()
+				logIn.ErrorMessage = fmt.Sprintf("idle>%s after %d chunks: %v", streamIdleTimeout, chunkCount, readErr)
+				return model.LLMScene{}, ErrLLMTimeout
+			}
+			log.Printf("[llm] stream read error: %v (chunks=%d)", readErr, chunkCount)
+			logIn.Status = "stream_read_error"
+			logIn.ResponseRaw = rawBuf.Bytes()
+			logIn.ErrorMessage = readErr.Error()
+			return model.LLMScene{}, fmt.Errorf("%w: stream: %v", ErrLLMUpstream, readErr)
+		}
+
+		trimmed := strings.TrimSpace(line)
+		if trimmed == "" || strings.HasPrefix(trimmed, ":") {
+			continue
+		}
+		if !strings.HasPrefix(trimmed, "data:") {
+			continue
+		}
+		payload := strings.TrimSpace(strings.TrimPrefix(trimmed, "data:"))
+		if payload == "[DONE]" {
+			break
+		}
+
+		var chunk deepseekStreamChunk
+		if err := json.Unmarshal([]byte(payload), &chunk); err != nil {
+			// Bỏ qua chunk lỗi, tiếp tục đọc — DeepSeek đôi khi gửi keepalive
+			// hoặc fragment lạ; chỉ fail nếu cả stream không có content nào.
+			continue
+		}
+		chunkCount++
+		if chunk.Error != nil {
+			streamErrMsg = chunk.Error.Message
+			break
+		}
+		if chunk.Usage != nil {
+			usage = *chunk.Usage
+		}
+		for _, c := range chunk.Choices {
+			if c.Delta.Content != "" {
+				contentBuf.WriteString(c.Delta.Content)
+			}
+			if c.FinishReason != "" {
+				finishReason = c.FinishReason
+			}
+		}
 	}
-	if len(ds.Choices) == 0 || strings.TrimSpace(ds.Choices[0].Message.Content) == "" {
-		log.Printf("[llm] empty content: %s", truncateForLog(raw))
+
+	cancelStream()
+	<-watchdogClosed
+
+	logIn.ResponseRaw = rawBuf.Bytes()
+	logIn.PromptTokens = usage.PromptTokens
+	logIn.CompletionTokens = usage.CompletionTokens
+	logIn.TotalTokens = usage.TotalTokens
+
+	if streamErrMsg != "" {
+		log.Printf("[llm] stream error: %s", streamErrMsg)
+		logIn.Status = "upstream_error"
+		logIn.ErrorMessage = streamErrMsg
+		return model.LLMScene{}, fmt.Errorf("%w: %s", ErrLLMUpstream, streamErrMsg)
+	}
+	content := contentBuf.String()
+	if strings.TrimSpace(content) == "" {
+		log.Printf("[llm] empty stream content (chunks=%d, finish=%q)", chunkCount, finishReason)
 		logIn.Status = "empty_content"
+		logIn.ErrorMessage = fmt.Sprintf("empty content; chunks=%d finish=%s", chunkCount, finishReason)
 		return model.LLMScene{}, fmt.Errorf("%w: empty content", ErrLLMUpstream)
 	}
+	if finishReason == "length" {
+		// MaxTokens cắt giữa JSON — báo lỗi rõ để retry path nâng cap nếu cần.
+		log.Printf("[llm] truncated by max_tokens (chunks=%d, content_len=%d)", chunkCount, len(content))
+	}
 
-	content := ds.Choices[0].Message.Content
 	var scene model.LLMScene
 	if err := json.Unmarshal([]byte(content), &scene); err != nil {
 		log.Printf("[llm] invalid scene json: %v content=%s", err, truncateForLog([]byte(content)))

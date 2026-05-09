@@ -16,11 +16,13 @@ const (
 )
 
 // AllowedLLMModels is the whitelist of DeepSeek model identifiers the admin
-// UI may switch between. Order matches the dropdown order. v4-pro is default
-// because v4-flash drops per-axis sizing fields more often.
+// UI may switch between. Order matches the dropdown order. v4-flash là default
+// vì không có reasoning chain dài (tránh timeout 100-150s khi prompt dense),
+// dù occasionally drop per-axis sizing — bù lại bằng validateAndClampScene
+// fill default. Admin có thể switch sang v4-pro qua UI khi cần quality cao hơn.
 var AllowedLLMModels = []string{
-	"deepseek-v4-pro",
 	"deepseek-v4-flash",
+	"deepseek-v4-pro",
 }
 
 func IsAllowedLLMModel(m string) bool {
@@ -36,7 +38,7 @@ func IsAllowedLLMModel(m string) bool {
 //  1. DB setting llm.model (set via admin UI) — takes priority so swapping
 //     models doesn't require a restart.
 //  2. Env var DEEPSEEK_MODEL via cfg.DeepSeekModel.
-//  3. Hardcoded default in cfg (currently deepseek-v4-pro).
+//  3. Hardcoded default in cfg (currently deepseek-v4-flash).
 //
 // Returns the env/default when the DB value isn't on the whitelist so an
 // invalid stored value can never break the runtime.
