@@ -127,6 +127,7 @@ X106_ADMIN_COOKIE_MAX_AGE = int(timedelta(hours=8).total_seconds())
 DEEPSEEK_API_KEY = env.str("DEEPSEEK_API_KEY", default="")
 DEEPSEEK_BASE_URL = env.str("DEEPSEEK_BASE_URL", default="https://api.deepseek.com")
 DEEPSEEK_MODEL = env.str("DEEPSEEK_MODEL", default="deepseek-v4-pro")
+DEEPSEEK_FLASH_MODEL = env.str("DEEPSEEK_FLASH_MODEL", default="deepseek-v4-flash")
 LLM_DAILY_LIMIT = env.int("LLM_DAILY_LIMIT", default=5)
 
 # ─── DRF & SimpleJWT ──────────────────────────────────────────────────────
