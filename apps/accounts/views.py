@@ -1,4 +1,4 @@
-"""Auth endpoints — login/logout/register (user) + login/logout (admin) + /users/me."""
+"""Auth endpoints — login/logout/register (user) + login/logout (admin) + /users/me + admin user mgmt."""
 
 from __future__ import annotations
 
@@ -6,11 +6,15 @@ from datetime import timedelta
 
 from django.conf import settings
 from django.contrib.auth import authenticate
-from rest_framework import status
+from django.db.models import Q
+from rest_framework import status, viewsets
+from rest_framework.decorators import action
 from rest_framework.permissions import AllowAny, IsAuthenticated
 from rest_framework.response import Response
 from rest_framework.views import APIView
 from rest_framework_simplejwt.tokens import AccessToken
+
+from apps.core.permissions import IsAdminToken
 
 from .models import User
 from .serializers import (
@@ -131,3 +135,127 @@ class UsersMeView(APIView):
 
     def get(self, request):
         return Response(UserSerializer(request.user).data)
+
+
+# ─── Admin: user management ────────────────────────────────────────────
+
+
+def _user_row(u: User) -> dict:
+    return {
+        "id":          u.id,
+        "username":    u.username,
+        "displayName": u.display_name or "",
+        "email":       u.email or "",
+        "isActive":    bool(u.is_active),
+        "isStaff":     bool(u.is_staff),
+        "isSuperuser": bool(u.is_superuser),
+        "lastLogin":   u.last_login.isoformat() if u.last_login else "",
+        "createdAt":   u.created_at.isoformat() if u.created_at else "",
+    }
+
+
+class AdminUsersViewSet(viewsets.ViewSet):
+    """List / activate / deactivate / delete users.
+
+    Safeguards:
+      - You cannot modify your own account from this UI (use the user-facing
+        flow or Django admin instead).
+      - Superusers cannot be deleted or deactivated from this UI — manage them
+        in `/admin/` to avoid accidentally locking yourself out.
+    """
+
+    permission_classes = [IsAdminToken]
+    lookup_field = "id"
+    lookup_value_regex = r"[^/]+"
+
+    def list(self, request):
+        params = request.query_params
+
+        try:
+            limit = max(1, min(int(params.get("limit", 50)), 200))
+        except (TypeError, ValueError):
+            limit = 50
+        try:
+            offset = max(0, int(params.get("offset", 0)))
+        except (TypeError, ValueError):
+            offset = 0
+
+        q = (params.get("q") or "").strip()
+        active_filter = (params.get("active") or "").strip().lower()
+
+        qs = User.objects.all()
+        if q:
+            qs = qs.filter(Q(username__icontains=q) | Q(display_name__icontains=q))
+        if active_filter == "active":
+            qs = qs.filter(is_active=True)
+        elif active_filter == "inactive":
+            qs = qs.filter(is_active=False)
+
+        total = qs.count()
+        rows = list(qs.order_by("-created_at")[offset : offset + limit])
+
+        return Response(
+            {
+                "items":  [_user_row(u) for u in rows],
+                "total":  total,
+                "limit":  limit,
+                "offset": offset,
+            }
+        )
+
+    def destroy(self, request, id: str | None = None):
+        if request.user and getattr(request.user, "id", None) == id:
+            return Response(
+                {"error": "Cannot delete your own account."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        try:
+            user = User.objects.get(id=id)
+        except User.DoesNotExist:
+            return Response(
+                {"error": "user not found"},
+                status=status.HTTP_404_NOT_FOUND,
+            )
+        if user.is_superuser:
+            return Response(
+                {"error": "Cannot delete a superuser. Use Django admin."},
+                status=status.HTTP_403_FORBIDDEN,
+            )
+        # Django ORM cascade for any related model that declares ForeignKey(User)
+        # with on_delete=CASCADE. Non-ORM rows referencing user_id (e.g. llm_jobs
+        # if it lacks a Django FK) will become orphaned and are tolerable for
+        # this small personal admin tool.
+        user.delete()
+        return Response({"message": "deleted", "id": id})
+
+    @action(detail=True, methods=["post"], url_path="activate")
+    def activate(self, request, id: str | None = None):
+        return self._set_active(request, id, True)
+
+    @action(detail=True, methods=["post"], url_path="deactivate")
+    def deactivate(self, request, id: str | None = None):
+        return self._set_active(request, id, False)
+
+    def _set_active(self, request, user_id: str | None, value: bool):
+        if request.user and getattr(request.user, "id", None) == user_id:
+            return Response(
+                {"error": "Cannot change your own active status."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        try:
+            user = User.objects.get(id=user_id)
+        except User.DoesNotExist:
+            return Response(
+                {"error": "user not found"},
+                status=status.HTTP_404_NOT_FOUND,
+            )
+        if user.is_superuser:
+            return Response(
+                {"error": "Cannot change a superuser's active status from here."},
+                status=status.HTTP_403_FORBIDDEN,
+            )
+        if user.is_active == value:
+            return Response(_user_row(user))
+        user.is_active = value
+        user.save(update_fields=["is_active", "updated_at"])
+        return Response(_user_row(user))
