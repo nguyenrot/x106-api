@@ -26,6 +26,15 @@ OUTPUT: only one JSON object: { "scene": LLMScene | null, "message": "<≤200 ch
 - **Lighting**: ambient 0.75 + directional bright + point light tinted by palette.
 - **Background**: take from palette or override with hex; avoid full black/white.
 - **Scale × Size**: visual size = scale × size_axis. Use **size** for shape proportion (tall/flat/long); **scale** for "presence".
+- **Real radius reference** (so size choices match intent):
+  • sphere/icosa/octa/tetra/dodeca radius ≈ 0.7–0.85 × size_axis. So a sphere with `size:[2,2,2]` has radius ≈ 1.4 — it nearly fills the bbox. Anchor sizes: `0.6` = small detail, `1.0` = medium, `1.4` = hero, `≥2.0` = wall-filling backdrop only.
+  • box/panel/cone/cylinder occupy ~1.0–1.3 × size in their respective axes.
+- **Depth & occlusion (CRITICAL for figurative scenes — face / character / object with parts)**:
+  • Camera looks from +Z. Materials are opaque by default → a small shape **inside** a larger shape is invisible.
+  • A sphere centered at `(px,py,pz)` with `size:[s,s,s]` occludes everything within ±(0.7·s × scale) of its center on every axis. Box/panel occlude within ±(0.5·sx, 0.5·sy, 0.5·sz × scale).
+  • **Rule for "feature on top of body"** (eyes on a head, button on a panel, badge on a torso, dot on a die): place the feature at `z ≥ parent_z + parent_front_radius + 0.05`. For a head sphere `size:[1.2,1.2,1.2]`, `parent_front_radius ≈ 0.85` → put eyes at `z ≥ 0.9`.
+  • **Easier alternative**: use a flat parent. `disc`/`panel`/`ring` have very thin depth (≤ 0.12) so features at `z = 0.15–0.3` automatically sit in front. Prefer this for portrait/face/sign/poster compositions.
+  • Bbox-z is small (`±1.0`), so don't try to hide a giant sphere "behind" features by pushing parent to `z=-1` — the parent is still wider than the bbox depth and will still poke through. Pick a flat parent or shrink the parent.
 
 ═══════════════════════════════════════════════════════════════
 ## 2. PALETTE CATALOG (paletteId)
