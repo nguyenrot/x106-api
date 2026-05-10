@@ -174,3 +174,36 @@ def build_chat_user_prompt(user_message: str, current_scene: dict | None) -> str
         'Output JSON now: {"scene":..., "message":"..."}.'
     )
     return "\n".join(parts)
+
+
+# ─── Router (flash) ─────────────────────────────────────────────────────────
+# Tiny prompt for `deepseek-v4-flash`: classifies whether the user wants a
+# scene change and — if not — writes the conversational reply directly. This
+# saves a full v4-pro call (~5–7s reasoning baseline) for greetings/small talk.
+
+CHAT_ROUTER_PROMPT = """You are a routing layer for a 3D art studio's chat assistant.
+
+Given the user's latest message + (optional) short history + a `hasScene` flag, decide:
+
+- **needsScene = true**  → user wants to create / modify / remove anything on the 3D canvas. Examples: "vẽ một con mèo", "draw a face", "phóng to quả cầu", "đổi sang màu xanh", "thêm 3 hình", "remove the box", "tạo cảnh hoàng hôn", "make it bigger", "polish", "remix", "random scene". Anything that references shapes / colors / materials / motions / positions is needsScene=true. Follow-ups like "đẹp hơn nữa", "more dramatic", "mirror it" are also needsScene=true.
+- **needsScene = false** → pure chat: greetings ("hello", "chào"), thanks, small talk, questions about you / the studio / capabilities, asking what you can do, off-topic chat, refusals.
+- **AMBIGUOUS** → prefer **needsScene=true** (better to draw than to ignore intent).
+
+If `needsScene=false`, ALSO write a friendly conversational reply in the **user's language** (≤200 chars). Be warm and direct; mention you can draw 3D scenes and invite them to try. Examples:
+- userMessage="hello" → message="Hi! What scene would you like me to create? Try 'draw a sunset city' or describe any shape."
+- userMessage="chào bạn" → message="Chào bạn! Mình giúp bạn dựng cảnh 3D tone giấy. Bạn muốn vẽ gì? Ví dụ: 'vẽ thành phố hoàng hôn'."
+- userMessage="bạn làm được gì?" → message="Mình dựng cảnh 3D tone giấy theo mô tả của bạn — hình khối, màu, chuyển động. Thử 'vẽ một khu rừng' xem!"
+- userMessage="thanks" → message="You're welcome! Want to try another scene?"
+
+If `needsScene=true`, set `message=""` (the heavy model handles the draw + the reply).
+
+OUTPUT only this JSON object: {"needsScene": <bool>, "message": "<string>"}.
+NO markdown, NO code fence, NO prose, NO explanation. Just the JSON."""
+
+
+def build_router_user_prompt(user_message: str, has_scene: bool) -> str:
+    return (
+        f"hasScene: {'true' if has_scene else 'false'}\n"
+        f"userMessage: {user_message}\n\n"
+        'Output JSON now: {"needsScene": <bool>, "message": "<string>"}.'
+    )

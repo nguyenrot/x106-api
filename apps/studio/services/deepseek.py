@@ -30,12 +30,19 @@ from ..errors import (
 )
 from ..models import LLMRequestLog
 from ..settings_keys import effective_model, llm_enabled
-from .prompts import CHAT_SYSTEM_PROMPT, build_chat_user_prompt
-from .scene import validate_chat_response
+from .prompts import (
+    CHAT_ROUTER_PROMPT,
+    CHAT_SYSTEM_PROMPT,
+    build_chat_user_prompt,
+    build_router_user_prompt,
+)
+from .scene import CHAT_MESSAGE_MAX_RUNES, validate_chat_response
+from apps.core.text import clamp_runes
 
 log = logging.getLogger("x106.studio.deepseek")
 
 CHAT_MAX_TOKENS = 4000  # chat scenes are smaller; cap output to keep latency tight
+ROUTER_MAX_TOKENS = 300  # router only outputs {needsScene, message} — small JSON
 LOG_TRUNCATE = 600
 
 _sync_client: OpenAI | None = None
@@ -182,6 +189,76 @@ def _parse_and_validate_chat(content: str, ctx: _CallContext) -> tuple[dict | No
     return (scene, message)
 
 
+def _build_history_messages(history: list[dict] | None) -> list[dict]:
+    out: list[dict] = []
+    if not history:
+        return out
+    for turn in history[-4:]:
+        role = turn.get("role")
+        content = turn.get("content")
+        if role in ("user", "assistant") and isinstance(content, str) and content.strip():
+            out.append({"role": role, "content": content})
+    return out
+
+
+def _call_router_flash(
+    user_id: str,
+    username: str,
+    user_message: str,
+    history: list[dict] | None,
+    has_scene: bool,
+) -> tuple[bool, str]:
+    """Step 1 of hybrid chat: ask flash whether the user wants a scene change
+    and — if not — to write the conversational reply itself.
+
+    Returns (needs_scene, message). On any failure (timeout, malformed JSON,
+    network), falls back to (True, "") so the caller routes to the heavy pro
+    flow — better to over-draw than to silently swallow a draw request.
+    """
+    flash_model = settings.DEEPSEEK_FLASH_MODEL
+    user_prompt = build_router_user_prompt(user_message, has_scene)
+    history_messages = _build_history_messages(history)
+
+    ctx = _CallContext(
+        user_id=user_id, username=username, mode="chat-router",
+        attempt=1, temperature=0.3, model=flash_model,
+    )
+    messages = (
+        [{"role": "system", "content": CHAT_ROUTER_PROMPT}]
+        + history_messages
+        + [{"role": "user", "content": user_prompt}]
+    )
+    try:
+        content = _do_call_sync(ctx, messages, ROUTER_MAX_TOKENS)
+    except Exception as exc:
+        ctx.status = ctx.status or "router_call_failed"
+        ctx.error_message = ctx.error_message or str(exc)
+        log.warning("chat router flash call failed: %s — falling back to pro", exc)
+        _record_log(ctx)
+        return (True, "")
+
+    try:
+        parsed = json.loads(content)
+        needs_scene = bool(parsed.get("needsScene"))
+        message_raw = parsed.get("message") or ""
+        message = clamp_runes(message_raw.strip(), CHAT_MESSAGE_MAX_RUNES) if isinstance(message_raw, str) else ""
+        # If router said "no scene" but produced no reply, treat as ambiguous
+        # and route to pro (which can still emit `scene: null` + a proper reply).
+        if not needs_scene and not message:
+            needs_scene = True
+        ctx.status = "success"
+        ctx.parsed_scene = {"router_decision": "draw" if needs_scene else "chat", "message": message}
+    except (json.JSONDecodeError, AttributeError, TypeError) as exc:
+        ctx.status = "router_parse_failed"
+        ctx.error_message = str(exc)
+        log.warning("chat router flash parse failed: %s — falling back to pro", exc)
+        _record_log(ctx)
+        return (True, "")
+
+    _record_log(ctx)
+    return (needs_scene, message)
+
+
 def _call_chat_sync(
     user_id: str,
     username: str,
@@ -194,16 +271,20 @@ def _call_chat_sync(
     Builds OpenAI messages = [system, ...history (≤4 turns), user]. Returns
     (scene_or_none, assistant_message). assistant_message is always present.
     """
+    # Hybrid routing: flash classifies intent first. Pure-chat replies (greetings,
+    # small talk, capability questions) get answered by flash directly — saves
+    # the v4-pro reasoning baseline (~5-7s) when no draw is required.
+    has_scene = bool(current_scene and isinstance(current_scene, dict) and current_scene.get("shapes"))
+    needs_scene, router_message = _call_router_flash(
+        user_id, username, user_message, history, has_scene
+    )
+    if not needs_scene:
+        return (None, router_message)
+
+    # Step 2 — pro draws. Existing flow.
     model = effective_model()
     user_prompt = build_chat_user_prompt(user_message, current_scene)
-
-    history_messages: list[dict] = []
-    if history:
-        for turn in history[-4:]:
-            role = turn.get("role")
-            content = turn.get("content")
-            if role in ("user", "assistant") and isinstance(content, str) and content.strip():
-                history_messages.append({"role": role, "content": content})
+    history_messages = _build_history_messages(history)
 
     ctx_first = _CallContext(
         user_id=user_id, username=username, mode="chat",
