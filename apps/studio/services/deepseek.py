@@ -42,7 +42,7 @@ from apps.core.text import clamp_runes
 
 log = logging.getLogger("x106.studio.deepseek")
 
-CHAT_MAX_TOKENS = 8000  # raised from 4000 — busy face/portrait scenes were truncating mid-JSON
+CHAT_MAX_TOKENS = 32000  # max practical for deepseek-v4-pro reasoning model — never truncate mid-JSON for any complexity
 ROUTER_MAX_TOKENS = 300  # router only outputs {needsScene, message} — small JSON
 LOG_TRUNCATE = 600
 
