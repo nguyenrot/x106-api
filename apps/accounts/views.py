@@ -141,9 +141,11 @@ class UsersMeView(APIView):
 
 
 def _user_row(u: User) -> dict:
+    # Legacy rows (created before Django model enforcement) can have NULL
+    # username/email — coerce to "" so the frontend never sees a null string.
     return {
         "id":          u.id,
-        "username":    u.username,
+        "username":    u.username or "",
         "displayName": u.display_name or "",
         "email":       u.email or "",
         "isActive":    bool(u.is_active),
