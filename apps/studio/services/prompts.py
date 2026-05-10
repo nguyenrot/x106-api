@@ -48,7 +48,7 @@ Mỗi palette có background tone + 5 swatch. Bạn TỰ chọn màu cho mỗi s
 | **vintage-press** | #efe6cf | #8b2635 #d4a541 #7a8a64 #1f1a14 #f0e6d0 | giấy vintage, đỏ rượu + vàng đồng + xanh rêu |
 
 ═══════════════════════════════════════════════════════════════
-## 3. SHAPE PRIMITIVES (11 kinds)
+## 3. SHAPE PRIMITIVES (16 kinds)
 
 Mỗi shape có đặc tính hình học riêng. Chọn kind PHÙ HỢP với ý đồ (đừng đặt sphere ở đâu cũng dùng).
 
@@ -63,29 +63,40 @@ Mỗi shape có đặc tính hình học riêng. Chọn kind PHÙ HỢP với ý
 - **icosahedron**: 20 mặt đều — đọc như đá quý, viên xúc xắc thần. Tỉ lệ ~đều.
 - **octahedron**: 8 mặt đều (kim cương 2 chóp) — đọc như viên đá pha lê. Tỉ lệ ~đều, có thể stretch height (size [1, 1.6, 1]).
 - **disc**: đĩa tròn dẹt — đọc như đồng xu, mặt trăng. Tỉ lệ: w ≈ h ≈ 1.5 × d 0.2–0.4 (rất dẹt).
+- **tetrahedron**: 4 mặt tam giác đều — đọc như đá quý sắc, kim tự tháp lộn ngược. Tỉ lệ ~đều, KHÔNG stretch nhiều (mất nét sắc).
+- **dodecahedron**: 12 mặt ngũ giác đều — đọc như xúc xắc cổ, hành tinh tinh thể. Tỉ lệ ~đều, đọc rõ khi scale ≥ 0.9.
+- **ring**: vành mỏng rỗng (annulus phẳng) — đọc như nhẫn, halo, vành hành tinh. Mặc định mặt phẳng XY; tỉ lệ tốt size [1.4, 1.4, 0.1] (rất mỏng — đừng cho d > 0.3, mất hồn vành mỏng).
+- **prism**: lăng trụ tam giác — đọc như cánh buồm dựng, mảng kiến trúc đứng. Tỉ lệ tốt: width ≈ depth, height ≥ width (size [0.8, 1.8, 0.8]).
+- **pyramid**: kim tự tháp 4 mặt — đọc như Egyptian, núi nhọn. Tỉ lệ tương tự cone (width ≈ depth, height ≥ width).
 
 **Quy tắc tỉ lệ chung**: TUYỆT ĐỐI tránh size [1, 1, 1] đồng đều cho mọi shape — đọc như placeholder mặc định, kém thẩm mỹ. Mỗi shape phải có **silhouette có chủ đích**.
 
 ═══════════════════════════════════════════════════════════════
-## 4. MATERIALS (4 kinds)
+## 4. MATERIALS (7 kinds)
 
 - **matte**: bề mặt giấy / đất sét, không phản chiếu. Dùng cho khối "neutral", không cần highlight. Phổ biến nhất, baseline.
 - **glass**: trong suốt nhẹ (transmission ~35%), bóng nhẹ. Dùng cho 1–2 shape muốn "trôi nổi" / overlay. KHÔNG dùng glass cho text (sẽ tự fallback matte).
 - **metal**: phản chiếu vừa (roughness 0.24), highlight đậm. Dùng để tạo "trọng tâm" — không quá 30% scene.
 - **glow**: emissive (0.24), tự phát sáng + bloom mềm. Dùng để tạo "ngôi sao" / điểm sáng. Không quá 40% scene (loãng cảm xúc).
+- **iridescent**: bề mặt cầu vồng (cánh bướm / xà cừ) — màu thay đổi theo góc nhìn. Dùng tiết kiệm cho 1–2 shape "tâm điểm thần bí". KHÔNG quá 15% scene (loé mắt).
+- **velvet**: bề mặt nhung mềm (sheen viền nhẹ) — gần matte nhưng có ánh sáng vành. Phù hợp shape "ấm áp", "dệt vải", phong cách thủ công. Có thể chiếm tới 25% scene.
+- **wireframe**: chỉ đường khung — đọc như blueprint / line art / ghost. Dùng tiết kiệm 1–3 shape làm "structural / hư ảo". KHÔNG quá 15% scene (rối nét).
 
-**Pairing hints**: matte + glow tương phản tốt; metal + glass khó đứng cùng (cả hai đều bóng); glass + matte hài hoà. Với palette dark (mono-bold, vintage-press), glow là điểm nhấn mạnh; với palette bright (poster-bright, tropical-punch), nên cân matte để không loé.
+**Pairing hints**: matte + glow tương phản tốt; metal + glass khó đứng cùng (cả hai đều bóng); glass + matte hài hoà. **iridescent + matte** tương phản đẹp (matte làm nền cho cầu vồng nổi bật); **wireframe đứng trên panel matte** đọc như blueprint dán tường; **velvet + glow** tạo cảm giác ấm mềm (nhung + ánh sáng). Với palette dark (mono-bold, vintage-press), glow + iridescent là điểm nhấn mạnh; với palette bright (poster-bright, tropical-punch), nên cân matte + velvet để không loé.
 
 ═══════════════════════════════════════════════════════════════
-## 5. MOTIONS (5 kinds)
+## 5. MOTIONS (8 kinds)
 
 - **still**: đứng yên. Baseline. Dùng cho shape "kiến trúc".
 - **float**: bobbing trục Y, biên độ ±0.12. Đọc như hơi thở. Dùng cho shape mềm (sphere, capsule).
-- **spin**: xoay quanh trục Y chậm. Đọc như đồng xu lăn / vành khuyên. Phù hợp torus, knot, disc.
+- **spin**: xoay quanh trục Y chậm. Đọc như đồng xu lăn / vành khuyên. Phù hợp torus, knot, disc, ring.
 - **orbit**: quay theo vòng XZ quanh origin gốc shape, bán kính ±0.18. Tạo cảm giác hành tinh. Không quá 2 shape/scene (loạn).
 - **pulse**: scale breathe ±8% theo sin. Dùng cho shape muốn "thở" (heart, sun).
+- **wobble**: rung đa trục nhẹ (rotation.x ±0.1 + rotation.z ±0.08). Đọc như thuyền trên sóng / lá rơi xoay. Phù hợp shape mềm (sphere, capsule, dodecahedron) hoặc vành (torus, ring).
+- **swing**: pendulum quanh trục Z (rotation.z ±0.22). Đọc như chuông treo lắc, đồng hồ quả lắc. Phù hợp shape dài đứng (cylinder, cone, prism, pyramid) gắn ở đỉnh — đặc biệt khi y > 0.
+- **drift**: pan ngang chậm (XY ±0.08–0.10). Đọc như khinh khí cầu trôi, lá rơi tự do. Phù hợp 1–2 shape "không trọng lực" (sphere, ring, panel).
 
-**Quy tắc**: trộn motion để có nhịp — đừng để mọi shape cùng motion (trừ khi cố ý "still" cho cả scene tĩnh). Hero shape thường lấy motion mạnh hơn (spin/pulse), shape phụ tĩnh hơn (still/float).
+**Quy tắc**: trộn motion để có nhịp — đừng để mọi shape cùng motion (trừ khi cố ý "still" cho cả scene tĩnh). Hero shape thường lấy motion mạnh hơn (spin/pulse/swing), shape phụ tĩnh hơn (still/float/wobble).
 
 ═══════════════════════════════════════════════════════════════
 ## 6. LAYOUT VOCABULARY (math, không phải template ID) — DENSE-DEFAULT
@@ -121,10 +132,10 @@ Bạn TỰ DO mix — ví dụ "wave field 50 + vortex hero 20 lồng vào". Lay
   "shapes": [   // MẶC ĐỊNH 50–80 (dense); hard cap 1–100; output < 40 BỊ TỪ CHỐI
     {
       "id": "s_0",
-      "shape": "sphere|box|torus|knot|panel|cone|cylinder|capsule|icosahedron|octahedron|disc",
+      "shape": "sphere|box|torus|knot|panel|cone|cylinder|capsule|icosahedron|octahedron|disc|tetrahedron|dodecahedron|ring|prism|pyramid",
       "color": "#hex (3 or 6 hex digits)",
-      "material": "matte|glass|metal|glow",
-      "motion": "still|float|spin|orbit|pulse",
+      "material": "matte|glass|metal|glow|iridescent|velvet|wireframe",
+      "motion": "still|float|spin|orbit|pulse|wobble|swing|drift",
       "position": [x, y, z],     // x∈[-2.5,2.5] y∈[-1.6,1.6] z∈[-1,1]
       "size": [w, h, d],         // mỗi axis 0.3..4.0; KHÔNG dùng [1,1,1] mọi shape
       "scale": <0.4..2.4>,       // outer multiplier
@@ -139,8 +150,8 @@ Bạn TỰ DO mix — ví dụ "wave field 50 + vortex hero 20 lồng vào". Lay
       "font": "sans|serif|round|square",
       "align": "left|center|right",
       "color": "#hex",
-      "material": "matte|glass|metal|glow",  // glass tự fallback matte
-      "motion": "still|float|spin|orbit|pulse",
+      "material": "matte|glass|metal|glow|iridescent|velvet|wireframe",  // glass tự fallback matte
+      "motion": "still|float|spin|orbit|pulse|wobble|swing|drift",
       "position": [x, y, z],
       "scale": <0.8..2.4>,
       "rotation": [rx, ry, rz],  // OPTIONAL
@@ -158,8 +169,8 @@ Bạn TỰ DO mix — ví dụ "wave field 50 + vortex hero 20 lồng vào". Lay
   • 1–2 hero (scale 1.4–2.0, vật liệu glow hoặc metal nổi, motion mạnh pulse/spin) — luôn có ít nhất 1.
   • 60–85% là background fill (scale 0.4–0.8, đa số matte) — phần body của scene.
   • 10–20% accent (scale 0.9–1.3) — bridge giữa hero và fill.
-- **Material quotas khi dense**: matte ≥ 50% tổng shape, glow ≤ 30%, metal ≤ 25%, glass ≤ 8% (glass nhiều quá sẽ rối render).
-- **Motion variety**: ≥ 3 motion khác nhau xuất hiện trong scene; KHÔNG để ≥ 90% shape cùng motion. Mặc định: still ~50%, float ~25%, spin ~10%, pulse ~10%, orbit ~5%.
+- **Material quotas khi dense**: matte ≥ 45% tổng shape, glow ≤ 30%, metal ≤ 25%, glass ≤ 8%, iridescent ≤ 15%, velvet ≤ 25%, wireframe ≤ 15% (cộng dồn vẫn cần matte chiếm gần một nửa để giữ nền giấy).
+- **Motion variety**: ≥ 3 motion khác nhau xuất hiện trong scene; KHÔNG để ≥ 90% shape cùng motion. Mặc định: still ~45%, float ~20%, spin ~10%, pulse ~8%, orbit ~5%, wobble ~5%, swing ~4%, drift ~3%.
 - **Size variety**: KHÔNG được [1,1,1] đồng đều cho > 30% scene. Mỗi shape size PHẢI có 3 giá trị > 0; per-axis variation đọc rõ silhouette.
 - **Position**: trong bbox; tự clamp nếu sát biên.
 - **Texts**: 0–4 text, Việt thơ ca ngắn gọn. Scene 80 shape không cần text — đôi khi không có text mạnh hơn.

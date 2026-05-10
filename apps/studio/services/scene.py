@@ -21,9 +21,16 @@ SHAPE_KINDS = frozenset({
     "sphere", "box", "torus", "knot",
     "panel", "cone", "cylinder", "capsule",
     "icosahedron", "octahedron", "disc",
+    "tetrahedron", "dodecahedron", "ring", "prism", "pyramid",
 })
-MATERIALS = frozenset({"matte", "glass", "metal", "glow"})
-MOTIONS = frozenset({"still", "float", "spin", "orbit", "pulse"})
+MATERIALS = frozenset({
+    "matte", "glass", "metal", "glow",
+    "iridescent", "velvet", "wireframe",
+})
+MOTIONS = frozenset({
+    "still", "float", "spin", "orbit", "pulse",
+    "wobble", "swing", "drift",
+})
 FONTS = frozenset({"sans", "serif", "round", "square"})
 TEXT_ALIGNS = frozenset({"left", "center", "right"})
 
