@@ -1,8 +1,9 @@
 """DeepSeek streaming client + scene-call orchestration.
 
 Uses the official `openai` SDK against DeepSeek's OpenAI-compatible endpoint.
-Same idle watchdog (60s without a chunk → abort), same retry policy (one retry
-on upstream errors with stricter prompt + lower temp), same audit log.
+Idle protection comes from httpx's `read` timeout (180s without any byte from
+the upstream socket → ReadTimeout → APITimeoutError → LLMTimeoutError). One
+retry on upstream errors with stricter prompt + lower temp. Audit log per call.
 """
 
 from __future__ import annotations
@@ -31,8 +32,7 @@ from .scene import validate_and_clamp_scene
 
 log = logging.getLogger("x106.studio.deepseek")
 
-STREAM_IDLE_TIMEOUT = 60.0  # seconds
-MAX_TOKENS = 16_384
+MAX_TOKENS = 6000
 LOG_TRUNCATE = 600
 
 _client: OpenAI | None = None
@@ -44,7 +44,7 @@ def _get_client() -> OpenAI:
         _client = OpenAI(
             api_key=settings.DEEPSEEK_API_KEY,
             base_url=settings.DEEPSEEK_BASE_URL,
-            timeout=httpx.Timeout(connect=10.0, read=None, write=30.0, pool=10.0),
+            timeout=httpx.Timeout(connect=10.0, read=180.0, write=30.0, pool=10.0),
             max_retries=0,
         )
     return _client
@@ -115,12 +115,7 @@ def _do_call(ctx: _CallContext, system_prompt: str, user_prompt: str) -> dict:
 
     try:
         stream = _get_client().chat.completions.create(**params)
-        last_activity = time.monotonic()
         for chunk in stream:
-            now = time.monotonic()
-            if now - last_activity > STREAM_IDLE_TIMEOUT:
-                raise LLMTimeoutError(f"stream idle > {STREAM_IDLE_TIMEOUT}s")
-            last_activity = now
             chunk_count += 1
 
             usage = getattr(chunk, "usage", None)
@@ -154,11 +149,6 @@ def _do_call(ctx: _CallContext, system_prompt: str, user_prompt: str) -> dict:
         ctx.error_message = str(exc)
         ctx.latency_ms = int((time.monotonic() - start) * 1000)
         raise LLMUpstreamError(f"connection error: {exc}") from exc
-    except LLMTimeoutError:
-        ctx.status = "stream_idle_timeout"
-        ctx.error_message = f"idle>{STREAM_IDLE_TIMEOUT}s after {chunk_count} chunks"
-        ctx.latency_ms = int((time.monotonic() - start) * 1000)
-        raise
 
     ctx.latency_ms = int((time.monotonic() - start) * 1000)
 
