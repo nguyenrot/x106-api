@@ -9,7 +9,6 @@ from django.conf import settings
 
 from .models import AppSetting
 
-SETTING_LLM_SYSTEM_PROMPT = "llm.system_prompt"
 SETTING_LLM_DAILY_LIMIT = "llm.daily_limit"
 SETTING_LLM_ENABLED = "llm.enabled"
 SETTING_LLM_MODEL = "llm.model"

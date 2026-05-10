@@ -17,17 +17,13 @@ from rest_framework.response import Response
 
 from apps.core.permissions import IsAdminToken
 from apps.studio.models import LLMJob, LLMRequestLog
-from apps.studio.services.prompts import DEFAULT_SYSTEM_PROMPT
 from apps.studio.settings_keys import (
     ALLOWED_LLM_MODELS,
     SETTING_LLM_DAILY_LIMIT,
     SETTING_LLM_ENABLED,
     SETTING_LLM_MODEL,
-    SETTING_LLM_SYSTEM_PROMPT,
-    delete_setting,
     effective_daily_limit,
     effective_model,
-    get_setting,
     llm_enabled,
     set_setting,
 )
@@ -35,7 +31,6 @@ from apps.studio.settings_keys import (
 from . import services
 from .serializers import (
     ArtAdjustQuotaSerializer,
-    ArtPromptUpdateSerializer,
     ArtSetQuotaSerializer,
     ArtSettingsUpdateSerializer,
 )
@@ -94,26 +89,6 @@ class AdminArtViewSet(viewsets.ViewSet):
         count = services.adjust_user_quota_today(user_id, serializer.validated_data["delta"])
         limit = effective_daily_limit()
         return Response({"count": count, "remaining": max(limit - count, 0), "limit": limit})
-
-    @action(detail=False, methods=["get", "put"], url_path="llm-prompt")
-    def llm_prompt(self, request):
-        if request.method == "GET":
-            stored = (get_setting(SETTING_LLM_SYSTEM_PROMPT) or "").strip()
-            if not stored:
-                return Response(
-                    {"prompt": DEFAULT_SYSTEM_PROMPT, "isDefault": True, "default": DEFAULT_SYSTEM_PROMPT}
-                )
-            return Response(
-                {"prompt": stored, "isDefault": False, "default": DEFAULT_SYSTEM_PROMPT}
-            )
-        serializer = ArtPromptUpdateSerializer(data=request.data)
-        serializer.is_valid(raise_exception=True)
-        prompt = (serializer.validated_data.get("prompt") or "").strip()
-        if not prompt:
-            delete_setting(SETTING_LLM_SYSTEM_PROMPT)
-            return Response({"message": "reverted to default"})
-        set_setting(SETTING_LLM_SYSTEM_PROMPT, serializer.validated_data["prompt"])
-        return Response({"message": "saved"})
 
     @action(detail=False, methods=["get"], url_path="stats")
     def stats(self, _request):
@@ -273,5 +248,6 @@ class AdminArtViewSet(viewsets.ViewSet):
                 "finishedAt": _iso_or_blank(r.finished_at),
                 "requestBody": r.request_body,
                 "resultScene": r.result_scene,
+                "resultMessage": r.result_message or "",
             }
         )

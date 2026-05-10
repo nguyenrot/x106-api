@@ -150,10 +150,8 @@ class LLMViewSet(viewsets.ViewSet):
 
         request_body_payload: dict = {
             "currentScene": body.get("currentScene"),
-            "strokeCount": body.get("strokeCount") or 0,
+            "userMessage": body["userMessage"],
         }
-        if body.get("userMessage"):
-            request_body_payload["userMessage"] = body["userMessage"]
         if body.get("history"):
             request_body_payload["history"] = body["history"]
 

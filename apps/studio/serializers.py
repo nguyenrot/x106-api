@@ -177,25 +177,14 @@ class ChatTurnSerializer(serializers.Serializer):
 
 
 class LLMSubmitSerializer(serializers.Serializer):
-    mode = serializers.ChoiceField(choices=LLMMode.choices)
+    mode = serializers.ChoiceField(choices=LLMMode.choices, default=LLMMode.CHAT)
     currentScene = serializers.JSONField(required=False, allow_null=True)
-    strokeCount = serializers.IntegerField(required=False, default=0, min_value=0)
     userMessage = serializers.CharField(
-        required=False, allow_blank=False, max_length=400
+        required=True, allow_blank=False, max_length=400
     )
     history = serializers.ListField(
         required=False, child=ChatTurnSerializer(), max_length=4
     )
-
-    def validate(self, attrs):
-        mode = attrs["mode"]
-        if mode == LLMMode.CHAT:
-            if not attrs.get("userMessage"):
-                raise serializers.ValidationError("userMessage is required for chat")
-            return attrs
-        if mode != LLMMode.RANDOM and not attrs.get("currentScene"):
-            raise serializers.ValidationError("currentScene is required for polish/remix")
-        return attrs
 
 
 class LLMJobSubmitResponseSerializer(serializers.Serializer):

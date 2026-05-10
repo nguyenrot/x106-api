@@ -55,10 +55,8 @@ def run_llm_job(self, job_id: str) -> None:
         scene, assistant_message = call_deepseek(
             user_id=job.user_id,
             username=job.username,
-            mode=mode,
+            user_message=body.get("userMessage") or "",
             current_scene=body.get("currentScene"),
-            stroke_count=int(body.get("strokeCount") or 0),
-            user_message=body.get("userMessage"),
             history=body.get("history"),
         )
     except SoftTimeLimitExceeded:

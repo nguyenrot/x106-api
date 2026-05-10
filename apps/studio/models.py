@@ -21,9 +21,6 @@ class ArtworkKind(models.TextChoices):
 
 
 class LLMMode(models.TextChoices):
-    RANDOM = "random"
-    POLISH = "polish"
-    REMIX = "remix"
     CHAT = "chat"
 
 

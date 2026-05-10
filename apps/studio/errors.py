@@ -35,11 +35,3 @@ class JobInvalidStatus(StudioError):
 
 class SceneValidationError(StudioError):
     pass
-
-
-class OutlineValidationError(StudioError):
-    """LLM outline (stage 1) failed schema/constraint check."""
-
-
-class ClusterExpansionError(StudioError):
-    """LLM cluster expansion (stage 2) failed validation."""
