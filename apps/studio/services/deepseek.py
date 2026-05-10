@@ -343,8 +343,8 @@ def _call_chat_sync(
     except LLMUpstreamError:
         retry_user_prompt = (
             user_prompt
-            + '\n\nSTRICT JSON ONLY. Output: {"scene": ... | null, "message": "<Vietnamese ≤200 chars>"}.'
-            " Field 'message' is REQUIRED và không được rỗng."
+            + '\n\nSTRICT JSON ONLY. Output: {"scene": ... | null, "message": "<≤200 chars, same language as userMessage>"}.'
+            " Field 'message' is REQUIRED and must not be empty."
         )
         ctx_second = _CallContext(
             user_id=user_id, username=username, mode="chat",
