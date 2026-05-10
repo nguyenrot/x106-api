@@ -18,6 +18,7 @@ from dataclasses import dataclass, field
 from decimal import Decimal
 
 import httpx
+import json_repair
 from django.conf import settings
 from openai import APIConnectionError, APIStatusError, APITimeoutError, OpenAI
 
@@ -41,7 +42,7 @@ from apps.core.text import clamp_runes
 
 log = logging.getLogger("x106.studio.deepseek")
 
-CHAT_MAX_TOKENS = 4000  # chat scenes are smaller; cap output to keep latency tight
+CHAT_MAX_TOKENS = 8000  # raised from 4000 — busy face/portrait scenes were truncating mid-JSON
 ROUTER_MAX_TOKENS = 300  # router only outputs {needsScene, message} — small JSON
 LOG_TRUNCATE = 600
 
@@ -171,20 +172,34 @@ def _do_call_sync(ctx: _CallContext, messages: list[dict], max_tokens: int) -> s
 
 
 def _parse_and_validate_chat(content: str, ctx: _CallContext) -> tuple[dict | None, str]:
-    """Parse JSON + validate as chat response. Mutates ctx for logging."""
+    """Parse JSON + validate as chat response. Mutates ctx for logging.
+
+    Tolerant parsing strategy: try strict json.loads first; on failure, fall
+    back to json_repair which handles the two regressions we see in the wild —
+    (a) output truncated mid-object when completion hits max_tokens,
+    (b) DeepSeek emitting trailing commas or single-quoted keys.
+    The repaired payload still goes through validate_chat_response, which is
+    strict about field shape — so a structurally-broken repair fails loudly."""
     try:
         parsed = json.loads(content)
-    except json.JSONDecodeError as exc:
-        ctx.status = "invalid_chat_json"
-        ctx.error_message = str(exc)
-        raise LLMUpstreamError(f"invalid chat json: {exc}") from exc
+    except json.JSONDecodeError as primary_exc:
+        try:
+            parsed = json_repair.loads(content)
+            if not isinstance(parsed, dict):
+                raise ValueError(f"json_repair returned {type(parsed).__name__}, expected dict")
+            ctx.status = "repaired_json"  # logged as success, but flagged for monitoring
+        except Exception:
+            ctx.status = "invalid_chat_json"
+            ctx.error_message = str(primary_exc)
+            raise LLMUpstreamError(f"invalid chat json: {primary_exc}") from primary_exc
     try:
         scene, message = validate_chat_response(parsed)
     except SceneValidationError as exc:
         ctx.status = "validation_error"
         ctx.error_message = str(exc)
         raise LLMUpstreamError(str(exc)) from exc
-    ctx.status = "success"
+    if ctx.status != "repaired_json":
+        ctx.status = "success"
     ctx.parsed_scene = scene if scene is not None else {"message_only": True, "message": message}
     return (scene, message)
 

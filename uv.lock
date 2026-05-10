@@ -482,6 +482,15 @@ wheels = [
 ]
 
 [[package]]
+name = "json-repair"
+version = "0.59.6"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/b1/c9/7a8890d15b6b0bd215693d1f5ec09f23284cc2e4e044a20174d8e5026d40/json_repair-0.59.6.tar.gz", hash = "sha256:747948f5342ff0de28a5467d25b4ed4690291362311eb936752473345f7a2f51", size = 48854, upload-time = "2026-05-10T05:24:53.771Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/2c/db/bb4757af1854e035d9f1b8c99c254d4d6bc4996ef6abeabb4f50e7439a07/json_repair-0.59.6-py3-none-any.whl", hash = "sha256:9a5b4e485932ade35e14e8a61b1c14e6bd5230c72b1384dfe25f8c8032f30567", size = 47525, upload-time = "2026-05-10T05:24:52.016Z" },
+]
+
+[[package]]
 name = "jsonschema"
 version = "4.26.0"
 source = { registry = "https://pypi.org/simple" }
@@ -1043,6 +1052,7 @@ dependencies = [
     { name = "djangorestframework-simplejwt" },
     { name = "drf-spectacular" },
     { name = "gunicorn" },
+    { name = "json-repair" },
     { name = "mysqlclient" },
     { name = "openai" },
     { name = "redis" },
@@ -1068,6 +1078,7 @@ requires-dist = [
     { name = "djangorestframework-simplejwt", specifier = ">=5.5" },
     { name = "drf-spectacular", specifier = ">=0.28" },
     { name = "gunicorn", specifier = ">=23.0" },
+    { name = "json-repair", specifier = ">=0.30" },
     { name = "mysqlclient", specifier = ">=2.2" },
     { name = "openai", specifier = ">=1.55" },
     { name = "redis", specifier = ">=5.2" },
