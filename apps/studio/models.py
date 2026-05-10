@@ -24,6 +24,7 @@ class LLMMode(models.TextChoices):
     RANDOM = "random"
     POLISH = "polish"
     REMIX = "remix"
+    CHAT = "chat"
 
 
 class LLMJobStatus(models.TextChoices):
@@ -103,6 +104,7 @@ class LLMJob(models.Model):
     status = models.CharField(max_length=16, choices=LLMJobStatus.choices, default=LLMJobStatus.PENDING)
     request_body = models.JSONField(null=True, blank=True)
     result_scene = models.JSONField(null=True, blank=True)
+    result_message = models.TextField(null=True, blank=True)
     error_message = models.CharField(max_length=500, null=True, blank=True)
     attempt = models.IntegerField(default=0)
     created_at = models.DateTimeField(auto_now_add=True)

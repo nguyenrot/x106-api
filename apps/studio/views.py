@@ -148,15 +148,21 @@ class LLMViewSet(viewsets.ViewSet):
                 status=status.HTTP_429_TOO_MANY_REQUESTS,
             )
 
+        request_body_payload: dict = {
+            "currentScene": body.get("currentScene"),
+            "strokeCount": body.get("strokeCount") or 0,
+        }
+        if body.get("userMessage"):
+            request_body_payload["userMessage"] = body["userMessage"]
+        if body.get("history"):
+            request_body_payload["history"] = body["history"]
+
         job = LLMJob.objects.create(
             id=new_id(),
             user_id=request.user.id,
             username=request.user.username,
             mode=body["mode"],
-            request_body={
-                "currentScene": body.get("currentScene"),
-                "strokeCount": body.get("strokeCount") or 0,
-            },
+            request_body=request_body_payload,
         )
         run_llm_job.delay(job.id)
         return Response(
@@ -182,8 +188,11 @@ class LLMViewSet(viewsets.ViewSet):
             "elapsedMs": elapsed_ms,
             **_quota_payload(request.user.id),
         }
-        if job.status == LLMJobStatus.DONE and job.result_scene:
-            payload["scene"] = job.result_scene
+        if job.status == LLMJobStatus.DONE:
+            if job.result_scene:
+                payload["scene"] = job.result_scene
+            if job.result_message:
+                payload["assistantMessage"] = job.result_message
         if job.status in {LLMJobStatus.FAILED, LLMJobStatus.CANCELED} and job.error_message:
             payload["errorMessage"] = job.error_message
         return Response(payload)

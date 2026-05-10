@@ -52,12 +52,14 @@ def run_llm_job(self, job_id: str) -> None:
     mode = job.mode
 
     try:
-        scene = call_deepseek(
+        scene, assistant_message = call_deepseek(
             user_id=job.user_id,
             username=job.username,
             mode=mode,
             current_scene=body.get("currentScene"),
             stroke_count=int(body.get("strokeCount") or 0),
+            user_message=body.get("userMessage"),
+            history=body.get("history"),
         )
     except SoftTimeLimitExceeded:
         log.error("run_llm_job: %s soft-time-limit", job_id)
@@ -86,7 +88,9 @@ def run_llm_job(self, job_id: str) -> None:
 
     job.status = LLMJobStatus.DONE
     job.result_scene = scene
+    job.result_message = assistant_message
     job.error_message = None
     job.finished_at = timezone.now()
-    job.save(update_fields=["status", "result_scene", "error_message", "finished_at"])
-    log.info("run_llm_job: %s done shapes=%d", job_id, len(scene.get("shapes", [])))
+    job.save(update_fields=["status", "result_scene", "result_message", "error_message", "finished_at"])
+    shape_count = len((scene or {}).get("shapes", []))
+    log.info("run_llm_job: %s done mode=%s shapes=%d msg=%s", job_id, mode, shape_count, bool(assistant_message))

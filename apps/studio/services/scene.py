@@ -388,3 +388,29 @@ def validate_and_clamp_scene(scene: dict) -> dict:
         out["texts"] = []
 
     return out
+
+
+CHAT_MESSAGE_MAX_RUNES = 200
+
+
+def validate_chat_response(parsed: dict) -> tuple[dict | None, str]:
+    """Validate a chat-mode response: { scene: LLMScene | null, message: str }.
+
+    Raises SceneValidationError on hard failures (missing message, scene
+    present-but-malformed). Null scene is fine — chat may reply without
+    changing the canvas."""
+    if not isinstance(parsed, dict):
+        raise SceneValidationError("chat response is not an object")
+
+    raw_message = parsed.get("message")
+    if not isinstance(raw_message, str) or not raw_message.strip():
+        raise SceneValidationError("chat response missing 'message'")
+    message = clamp_runes(raw_message.strip(), CHAT_MESSAGE_MAX_RUNES)
+
+    raw_scene = parsed.get("scene")
+    if raw_scene is None:
+        return (None, message)
+    if not isinstance(raw_scene, dict):
+        raise SceneValidationError("chat 'scene' is not an object or null")
+    scene = validate_and_clamp_scene(raw_scene)
+    return (scene, message)

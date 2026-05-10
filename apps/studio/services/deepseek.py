@@ -44,8 +44,10 @@ from ..errors import (
 from ..models import LLMRequestLog
 from ..settings_keys import effective_model, llm_enabled
 from .prompts import (
+    CHAT_SYSTEM_PROMPT,
     EXPAND_SYSTEM_PROMPT,
     OUTLINE_SYSTEM_PROMPT,
+    build_chat_user_prompt,
     build_expand_user_prompt,
     build_outline_user_prompt,
     build_system_prompt,
@@ -54,6 +56,7 @@ from .prompts import (
 from .scene import (
     SCENE_VERSION,
     validate_and_clamp_scene,
+    validate_chat_response,
     validate_outline,
 )
 
@@ -146,14 +149,14 @@ def _record_log(ctx: _CallContext) -> None:
 
 # ─── Sync streaming call (monolithic pipeline) ────────────────────────────
 
-def _do_call_sync(ctx: _CallContext, system_prompt: str, user_prompt: str, max_tokens: int) -> str:
-    """Run one DeepSeek streaming call synchronously. Returns raw content; updates ctx."""
+def _do_call_sync(ctx: _CallContext, messages: list[dict], max_tokens: int) -> str:
+    """Run one DeepSeek streaming call synchronously. Returns raw content; updates ctx.
+
+    `messages` is the full OpenAI-style messages list (system + optional history + user).
+    The caller is responsible for assembling it."""
     params = {
         "model": ctx.model,
-        "messages": [
-            {"role": "system", "content": system_prompt},
-            {"role": "user", "content": user_prompt},
-        ],
+        "messages": messages,
         "response_format": {"type": "json_object"},
         "max_tokens": max_tokens,
         "temperature": ctx.temperature,
@@ -244,8 +247,13 @@ def _call_monolithic_sync(
         attempt=1, temperature=0.9, model=model,
     )
 
+    messages_first = [
+        {"role": "system", "content": system_prompt},
+        {"role": "user", "content": user_prompt},
+    ]
+
     try:
-        content = _do_call_sync(ctx_first, system_prompt, user_prompt, MAX_TOKENS)
+        content = _do_call_sync(ctx_first, messages_first, MAX_TOKENS)
         return _parse_and_validate_scene(content, ctx_first)
     except LLMUpstreamError:
         retry_user_prompt = (
@@ -257,9 +265,99 @@ def _call_monolithic_sync(
             user_id=user_id, username=username, mode=mode,
             attempt=2, temperature=0.5, model=model,
         )
+        messages_second = [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": retry_user_prompt},
+        ]
         try:
-            content = _do_call_sync(ctx_second, system_prompt, retry_user_prompt, MAX_TOKENS)
+            content = _do_call_sync(ctx_second, messages_second, MAX_TOKENS)
             return _parse_and_validate_scene(content, ctx_second)
+        finally:
+            _record_log(ctx_second)
+    finally:
+        _record_log(ctx_first)
+
+
+# ─── Chat (single v4-pro call with multi-turn history) ───────────────────
+
+CHAT_MAX_TOKENS = 4000  # chat scenes are smaller; cap output to keep latency tight
+
+
+def _parse_and_validate_chat(content: str, ctx: _CallContext) -> tuple[dict | None, str]:
+    """Parse JSON + validate as chat response. Mutates ctx for logging."""
+    try:
+        parsed = json.loads(content)
+    except json.JSONDecodeError as exc:
+        ctx.status = "invalid_chat_json"
+        ctx.error_message = str(exc)
+        raise LLMUpstreamError(f"invalid chat json: {exc}") from exc
+    try:
+        scene, message = validate_chat_response(parsed)
+    except SceneValidationError as exc:
+        ctx.status = "validation_error"
+        ctx.error_message = str(exc)
+        raise LLMUpstreamError(str(exc)) from exc
+    ctx.status = "success"
+    # Log scene if present; otherwise the message-only payload for debugging.
+    ctx.parsed_scene = scene if scene is not None else {"message_only": True, "message": message}
+    return (scene, message)
+
+
+def _call_chat_sync(
+    user_id: str,
+    username: str,
+    user_message: str,
+    history: list[dict] | None,
+    current_scene: dict | None,
+) -> tuple[dict | None, str]:
+    """Single-call chat with one retry on upstream/parse errors.
+
+    Builds OpenAI messages = [system, ...history (≤4 turns), user]. Returns
+    (scene_or_none, assistant_message). assistant_message is always present.
+    """
+    model = effective_model()
+    user_prompt = build_chat_user_prompt(user_message, current_scene)
+
+    history_messages: list[dict] = []
+    if history:
+        for turn in history[-4:]:
+            role = turn.get("role")
+            content = turn.get("content")
+            if role in ("user", "assistant") and isinstance(content, str) and content.strip():
+                history_messages.append({"role": role, "content": content})
+
+    ctx_first = _CallContext(
+        user_id=user_id, username=username, mode="chat",
+        attempt=1, temperature=0.7, model=model,
+    )
+
+    messages_first = (
+        [{"role": "system", "content": CHAT_SYSTEM_PROMPT}]
+        + history_messages
+        + [{"role": "user", "content": user_prompt}]
+    )
+
+    try:
+        content = _do_call_sync(ctx_first, messages_first, CHAT_MAX_TOKENS)
+        return _parse_and_validate_chat(content, ctx_first)
+    except LLMUpstreamError:
+        retry_user_prompt = (
+            user_prompt
+            + '\n\nSTRICT JSON ONLY. Output: {"scene": ... | null, "message": "<Vietnamese ≤200 chars>"}.'
+            " Field 'message' is REQUIRED và không được rỗng."
+        )
+        ctx_second = _CallContext(
+            user_id=user_id, username=username, mode="chat",
+            attempt=2, temperature=0.4, model=model,
+        )
+        messages_second = (
+            [{"role": "system", "content": CHAT_SYSTEM_PROMPT}]
+            + history_messages
+            + [{"role": "user", "content": retry_user_prompt}]
+        )
+        try:
+            content = _do_call_sync(ctx_second, messages_second, CHAT_MAX_TOKENS)
+            return _parse_and_validate_chat(content, ctx_second)
         finally:
             _record_log(ctx_second)
     finally:
@@ -598,12 +696,34 @@ async def _call_random_async(user_id: str, username: str, stroke_count: int) -> 
 
 # ─── Public sync entry (called by Celery task) ────────────────────────────
 
-def call_deepseek(user_id: str, username: str, mode: str, current_scene: dict | None, stroke_count: int) -> dict:
+def call_deepseek(
+    user_id: str,
+    username: str,
+    mode: str,
+    current_scene: dict | None,
+    stroke_count: int,
+    user_message: str | None = None,
+    history: list[dict] | None = None,
+) -> tuple[dict | None, str | None]:
+    """Dispatch to the right pipeline. Returns (scene_or_none, assistant_message_or_none).
+
+    - random/polish/remix → (scene, None)
+    - chat → (scene_or_none, message); message is always present, scene is null
+      when AI replied without changing the canvas.
+    """
     if not settings.DEEPSEEK_API_KEY:
         raise LLMDisabledError()
     if not llm_enabled():
         raise LLMOffError()
 
+    if mode == "chat":
+        if not user_message:
+            raise LLMUpstreamError("chat mode requires user_message")
+        return _call_chat_sync(user_id, username, user_message, history, current_scene)
+
     if mode == "random":
-        return asyncio.run(_call_random_async(user_id, username, stroke_count))
-    return _call_monolithic_sync(user_id, username, mode, current_scene, stroke_count)
+        scene = asyncio.run(_call_random_async(user_id, username, stroke_count))
+        return (scene, None)
+
+    scene = _call_monolithic_sync(user_id, username, mode, current_scene, stroke_count)
+    return (scene, None)
