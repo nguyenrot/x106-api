@@ -32,14 +32,14 @@ curl -LsSf https://astral.sh/uv/install.sh | sh   # installs uv to /root/.local/
 ```
 DJANGO_ENV=production
 DJANGO_SECRET_KEY=...
-ALLOWED_HOSTS=api.pkn.io.vn
+ALLOWED_HOSTS=api.kynguyen.cc
 DB_HOST=127.0.0.1
 DB_PORT=3306
 DB_NAME=finance_app
 DB_USER=finance_user
 DB_PASSWORD=...
 JWT_SECRET=...
-COOKIE_DOMAIN=.pkn.io.vn
+COOKIE_DOMAIN=.kynguyen.cc
 REDIS_URL=redis://127.0.0.1:6379/0
 DEEPSEEK_API_KEY=...
 DEEPSEEK_MODEL=deepseek-v4-pro

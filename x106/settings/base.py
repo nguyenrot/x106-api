@@ -177,11 +177,11 @@ CORS_ALLOWED_ORIGINS = [
     "http://localhost:3002",
     "http://localhost:3003",
     "http://localhost:3004",
-    "https://pkn.io.vn",
-    "https://me.pkn.io.vn",
-    "https://journal.pkn.io.vn",
-    "https://art.pkn.io.vn",
-    "https://admin.pkn.io.vn",
+    "https://kynguyen.cc",
+    "https://me.kynguyen.cc",
+    "https://journal.kynguyen.cc",
+    "https://art.kynguyen.cc",
+    "https://admin.kynguyen.cc",
 ]
 CORS_ALLOW_CREDENTIALS = True
 CORS_ALLOW_HEADERS = ["content-type", "authorization"]

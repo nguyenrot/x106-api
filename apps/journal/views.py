@@ -17,7 +17,7 @@ from .services import compute_stats
 
 
 class VibeViewSet(mixins.ListModelMixin, viewsets.GenericViewSet):
-    """journal.pkn.io.vn — vibes (mood entries).
+    """journal.kynguyen.cc — vibes (mood entries).
 
     POST /journal/vibes        -> upsert (user_id, date) — date defaults to local today.
     GET  /journal/vibes        -> list newest first.

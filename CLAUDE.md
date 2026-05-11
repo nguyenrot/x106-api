@@ -2,7 +2,7 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
-This is the **Python (Django + DRF + Celery)** API backend for the X106 ecosystem. Port 4000, served at `api.pkn.io.vn`. The repo lives at `/var/www/api` on the VPS and runs as the systemd unit `x106-api.service`. Two siblings — `x106-celery-worker.service` (DeepSeek async LLM jobs) and `x106-celery-beat.service` (recovery + cleanup schedule) — replace the old Go `x106-worker`. The parent ecosystem doc is at `../CLAUDE.md` — read it first for context on the surrounding apps and shared design system.
+This is the **Python (Django + DRF + Celery)** API backend for the X106 ecosystem. Port 4000, served at `api.kynguyen.cc`. The repo lives at `/var/www/api` on the VPS and runs as the systemd unit `x106-api.service`. Two siblings — `x106-celery-worker.service` (DeepSeek async LLM jobs) and `x106-celery-beat.service` (recovery + cleanup schedule) — replace the old Go `x106-worker`. The parent ecosystem doc is at `../CLAUDE.md` — read it first for context on the surrounding apps and shared design system.
 
 The Go service was rewritten to Python on 2026-05-09. Old Go source lives in git history under tags `pre-python-rewrite` and earlier — use `git log --oneline -- cmd/ internal/` if you need archaeology.
 
@@ -50,7 +50,7 @@ systemctl enable --now x106-api x106-celery-worker x106-celery-beat
 systemctl disable --now x106-worker.service 2>/dev/null || true
 ```
 
-`/etc/x106-api.env` contains the runtime env (DJANGO_SECRET_KEY, DB_*, JWT_SECRET, COOKIE_DOMAIN=.pkn.io.vn, REDIS_URL=redis://127.0.0.1:6379/0, DEEPSEEK_API_KEY, etc.). See `infra/systemd/README.md` for the full template.
+`/etc/x106-api.env` contains the runtime env (DJANGO_SECRET_KEY, DB_*, JWT_SECRET, COOKIE_DOMAIN=.kynguyen.cc, REDIS_URL=redis://127.0.0.1:6379/0, DEEPSEEK_API_KEY, etc.). See `infra/systemd/README.md` for the full template.
 
 ### Migrations on the VPS
 

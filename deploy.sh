@@ -27,7 +27,7 @@ uv run python manage.py migrate --noinput
 systemctl restart "$API_SERVICE"
 sleep 2
 systemctl is-active --quiet "$API_SERVICE"
-curl -fsSL https://api.pkn.io.vn/api/v1/health -o /dev/null
+curl -fsSL https://api.kynguyen.cc/api/v1/health -o /dev/null
 
 for svc in "$CELERY_SERVICE" "$BEAT_SERVICE"; do
   if [ -f "/etc/systemd/system/${svc}.service" ]; then
