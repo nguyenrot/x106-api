@@ -24,7 +24,6 @@ from __future__ import annotations
 
 import json
 import logging
-import time
 from dataclasses import dataclass
 
 import httpx
@@ -43,13 +42,16 @@ LOG_TRUNCATE = 600
 class ProviderResult:
     """Raw text + optional token usage stats from a single provider call.
 
-    Token counts default to 0 when the upstream omits usage info."""
+    Token counts default to 0 when the upstream omits usage info.
+    `http_status` records the response code on success (200 for OpenAI-compat
+    streams; on failure the exception carries the status, not this dataclass)."""
     content: str
     prompt_tokens: int = 0
     completion_tokens: int = 0
     total_tokens: int = 0
     finish_reason: str = ""
     chunk_count: int = 0
+    http_status: int = 200
 
 
 # ─── DeepSeek native ─────────────────────────────────────────────────────────
@@ -132,7 +134,8 @@ def _call_openai_compat(
         if exc.body is not None:
             body_text = exc.body if isinstance(exc.body, str) else json.dumps(exc.body, default=str)
         raise LLMUpstreamError(
-            f"upstream status={exc.status_code}: {body_text[:200]}"
+            f"upstream status={exc.status_code}: {body_text[:200]}",
+            http_status=exc.status_code,
         ) from exc
     except APITimeoutError as exc:
         raise LLMTimeoutError(str(exc)) from exc
@@ -212,7 +215,8 @@ def _call_anthropic_compat(
 
     if resp.status_code >= 400:
         raise LLMUpstreamError(
-            f"upstream status={resp.status_code}: {resp.text[:200]}"
+            f"upstream status={resp.status_code}: {resp.text[:200]}",
+            http_status=resp.status_code,
         )
 
     try:

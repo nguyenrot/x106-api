@@ -22,8 +22,6 @@ from apps.core.ids import new_id
 
 from . import quota
 from .errors import (
-    LLMDisabledError,
-    LLMOffError,
     QuotaExceeded,
 )
 from .models import Artwork, LLMJob, LLMJobStatus
@@ -200,7 +198,12 @@ class LLMViewSet(viewsets.ViewSet):
             request_body=request_body_payload,
             pro_model=resolved_pro,
         )
-        run_llm_job.delay(job.id)
+        async_result = run_llm_job.delay(job.id)
+        # Capture the Celery task id so cancel_job can revoke(terminate=True).
+        # AsyncResult.id is only populated post-enqueue, so this is a follow-up
+        # UPDATE — concurrent with the worker pick-up, but that's fine: the
+        # worker reads the row again before working.
+        LLMJob.objects.filter(id=job.id).update(celery_task_id=async_result.id)
         return Response(
             {"jobId": job.id, "used": used, "remaining": remaining, "limit": limit},
             status=status.HTTP_202_ACCEPTED,
@@ -267,11 +270,35 @@ class LLMViewSet(viewsets.ViewSet):
             return Response({"jobId": job.id, "status": LLMJobStatus.CANCELED, "refunded": bool(updated)})
 
         if job.status == LLMJobStatus.PROCESSING:
-            LLMJob.objects.filter(id=job_id, status=LLMJobStatus.PROCESSING).update(
+            updated = LLMJob.objects.filter(
+                id=job_id, status=LLMJobStatus.PROCESSING
+            ).update(
                 status=LLMJobStatus.CANCELED,
                 finished_at=timezone.now(),
             )
-            return Response({"jobId": job.id, "status": LLMJobStatus.CANCELED, "refunded": False})
+            refunded = False
+            if updated and job.celery_task_id:
+                # SIGTERM the running worker so we stop wasting upstream tokens.
+                # If revoke fails (broker hiccup / worker already exited), the
+                # cancel still stands — the conditional update in tasks.py
+                # prevents the worker from overwriting CANCELED back to DONE.
+                try:
+                    from celery import current_app
+                    current_app.control.revoke(
+                        job.celery_task_id, terminate=True, signal="SIGTERM"
+                    )
+                except Exception as exc:  # noqa: BLE001 — broker outage etc.
+                    log.warning(
+                        "cancel_job: revoke(%s) failed: %s — status still CANCELED",
+                        job.celery_task_id, exc,
+                    )
+                # Refund quota when we successfully canceled a running job —
+                # the worker won't reach its own refund path now.
+                quota.refund(job.user_id)
+                refunded = True
+            return Response(
+                {"jobId": job.id, "status": LLMJobStatus.CANCELED, "refunded": refunded}
+            )
 
         return Response(
             {"jobId": job.id, "status": job.status, "refunded": False, "noop": True}

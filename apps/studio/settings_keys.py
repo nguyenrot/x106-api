@@ -32,6 +32,17 @@ SETTING_LLM_FLASH_MODEL = "llm.flash_model"
 SETTING_LLM_PRO_MODEL = "llm.pro_model"
 SETTING_LLM_ALLOWED_FLASH = "llm.allowed_flash_models"  # JSON array
 SETTING_LLM_ALLOWED_PRO = "llm.allowed_pro_models"  # JSON array
+SETTING_LLM_PRO_MAX_TOKENS = "llm.pro_max_tokens"
+SETTING_LLM_FLASH_MAX_TOKENS = "llm.flash_max_tokens"
+
+# Sane defaults. Pro model has 6500 (down from 32000): a 16-shape scene
+# serializes ~2k tokens + ~4k headroom for the reasoning model's thinking.
+# Router model returns a tiny JSON (~80 tokens of output) so 500 is generous.
+# Both are clamped to (min, max) when reading the AppSetting override.
+DEFAULT_PRO_MAX_TOKENS = 6500
+DEFAULT_FLASH_MAX_TOKENS = 500
+PRO_MAX_TOKENS_MIN, PRO_MAX_TOKENS_MAX = 256, 32000
+FLASH_MAX_TOKENS_MIN, FLASH_MAX_TOKENS_MAX = 64, 2000
 
 # Legacy constant kept so existing imports (e.g. admin_art) keep working.
 # It now means "every model id the catalog knows about".
@@ -70,6 +81,39 @@ def effective_daily_limit() -> int:
 
 def llm_enabled() -> bool:
     return get_setting(SETTING_LLM_ENABLED).strip() != "off"
+
+
+def _read_int_setting(key: str, default: int, lo: int, hi: int) -> int:
+    raw = get_setting(key).strip()
+    if not raw:
+        return default
+    try:
+        n = int(raw)
+    except ValueError:
+        log.warning("setting %s is not a valid int: %r — falling back to %d", key, raw[:60], default)
+        return default
+    if n < lo or n > hi:
+        log.warning("setting %s=%d outside [%d,%d] — falling back to %d", key, n, lo, hi, default)
+        return default
+    return n
+
+
+def effective_pro_max_tokens() -> int:
+    return _read_int_setting(
+        SETTING_LLM_PRO_MAX_TOKENS,
+        DEFAULT_PRO_MAX_TOKENS,
+        PRO_MAX_TOKENS_MIN,
+        PRO_MAX_TOKENS_MAX,
+    )
+
+
+def effective_flash_max_tokens() -> int:
+    return _read_int_setting(
+        SETTING_LLM_FLASH_MAX_TOKENS,
+        DEFAULT_FLASH_MAX_TOKENS,
+        FLASH_MAX_TOKENS_MIN,
+        FLASH_MAX_TOKENS_MAX,
+    )
 
 
 # ─── Model defaults ──────────────────────────────────────────────────────────

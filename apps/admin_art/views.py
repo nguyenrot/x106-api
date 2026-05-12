@@ -7,9 +7,10 @@ Django staff session, enforced via the IsAdminToken permission class.
 
 from __future__ import annotations
 
-from datetime import datetime, timezone as dt_timezone
+from datetime import UTC, datetime
 from decimal import Decimal
 
+from django.conf import settings as dj_settings
 from django.utils import timezone
 from rest_framework import status, viewsets
 from rest_framework.decorators import action
@@ -17,19 +18,22 @@ from rest_framework.response import Response
 
 from apps.core.permissions import IsAdminToken
 from apps.studio.models import LLMJob, LLMRequestLog
-from apps.studio.services.model_catalog import all_models, get_model
+from apps.studio.services.model_catalog import all_models
 from apps.studio.settings_keys import (
     ALLOWED_LLM_MODELS,
     SETTING_LLM_DAILY_LIMIT,
     SETTING_LLM_ENABLED,
+    SETTING_LLM_FLASH_MAX_TOKENS,
     SETTING_LLM_FLASH_MODEL,
     SETTING_LLM_MODEL,
+    SETTING_LLM_PRO_MAX_TOKENS,
     SETTING_LLM_PRO_MODEL,
     allowed_flash_models,
     allowed_pro_models,
     effective_daily_limit,
+    effective_flash_max_tokens,
     effective_flash_model,
-    effective_model,
+    effective_pro_max_tokens,
     effective_pro_model,
     llm_enabled,
     set_allowed_flash_models,
@@ -43,7 +47,6 @@ from .serializers import (
     ArtSetQuotaSerializer,
     ArtSettingsUpdateSerializer,
 )
-from django.conf import settings as dj_settings
 
 
 def _iso_or_blank(dt) -> str:
@@ -52,8 +55,8 @@ def _iso_or_blank(dt) -> str:
     if not isinstance(dt, datetime):
         return ""
     if timezone.is_naive(dt):
-        dt = timezone.make_aware(dt, dt_timezone.utc)
-    return dt.astimezone(dt_timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+        dt = timezone.make_aware(dt, UTC)
+    return dt.astimezone(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
 def _settings_payload() -> dict:
@@ -77,6 +80,8 @@ def _settings_payload() -> dict:
         "proModel": effective_pro_model(),
         "allowedFlashModels": allowed_flash_models(),
         "allowedProModels": allowed_pro_models(),
+        "proMaxTokens": effective_pro_max_tokens(),
+        "flashMaxTokens": effective_flash_max_tokens(),
     }
 
 
@@ -154,6 +159,10 @@ class AdminArtViewSet(viewsets.ViewSet):
             set_allowed_pro_models(data["allowedProModels"])
         if "allowedFlashModels" in data:
             set_allowed_flash_models(data["allowedFlashModels"])
+        if "proMaxTokens" in data:
+            set_setting(SETTING_LLM_PRO_MAX_TOKENS, str(data["proMaxTokens"]))
+        if "flashMaxTokens" in data:
+            set_setting(SETTING_LLM_FLASH_MAX_TOKENS, str(data["flashMaxTokens"]))
         return Response(_settings_payload())
 
     # ─── DeepSeek call logs ────────────────────────────────────────────

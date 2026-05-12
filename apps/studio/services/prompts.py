@@ -8,6 +8,10 @@ that's also enforced by the scene validator (apps/studio/services/scene.py).
 from __future__ import annotations
 
 import json
+import logging
+import time
+
+log = logging.getLogger("x106.studio.prompts")
 
 
 CHAT_SYSTEM_PROMPT = """You are the **art director** of a 3D minimal paper-tone art studio, in CHAT MODE. The user gives you an instruction in their natural language; you interpret it and either modify the scene or reply without changing it.
@@ -207,3 +211,67 @@ def build_router_user_prompt(user_message: str, has_scene: bool) -> str:
         f"userMessage: {user_message}\n\n"
         'Output JSON now: {"needsScene": <bool>, "message": "<string>"}.'
     )
+
+
+# ─── Active prompt cache (Phase 1.6) ─────────────────────────────────────────
+#
+# Worker reads the currently-active LLMPromptVersion row per kind, caches
+# in-process for 60s. Falls back to the hardcoded constants above when the DB
+# has no active row (boot-safe; warning logged so the operator notices).
+#
+# The cache is module-level so all Celery workers in the same process share it.
+# Across processes, the 60s TTL is the worst-case staleness after an admin
+# activates a new version.
+
+_CACHE_TTL_SECONDS = 60.0
+_PROMPT_CACHE: dict[str, tuple[int | None, str, float]] = {}
+_FALLBACK_BODIES = {
+    "chat": CHAT_SYSTEM_PROMPT,
+    "router": CHAT_ROUTER_PROMPT,
+}
+
+
+def get_active_prompt(kind: str) -> tuple[int | None, str]:
+    """Return (prompt_version_id, body) for the currently-active prompt of
+    `kind` ("chat" or "router"). Caches the result for 60s. Returns
+    (None, hardcoded_fallback) if no active DB row exists yet."""
+    now = time.monotonic()
+    cached = _PROMPT_CACHE.get(kind)
+    if cached and now - cached[2] < _CACHE_TTL_SECONDS:
+        return (cached[0], cached[1])
+
+    # Local import — module loads before Django app registry on Celery boot,
+    # so we can't import LLMPromptVersion at the top of the file.
+    from apps.studio.models import LLMPromptVersion
+
+    pv_id: int | None = None
+    body: str = ""
+    try:
+        row = (
+            LLMPromptVersion.objects
+            .filter(kind=kind, is_active=True)
+            .values("id", "body")
+            .first()
+        )
+    except Exception as exc:  # noqa: BLE001 — table may not exist yet (pre-migrate)
+        log.warning("get_active_prompt(%s): DB read failed: %s — using fallback", kind, exc)
+        row = None
+
+    if row:
+        pv_id = int(row["id"])
+        body = row["body"]
+    else:
+        body = _FALLBACK_BODIES.get(kind, "")
+        if not body:
+            log.warning("get_active_prompt(%s): no DB row + no fallback known", kind)
+
+    _PROMPT_CACHE[kind] = (pv_id, body, now)
+    return (pv_id, body)
+
+
+def clear_prompt_cache() -> None:
+    """Test/admin helper — purge the in-process cache so the next call re-reads
+    from DB. The 60s TTL is usually enough for prod, but admin editor (Phase 3.1)
+    should call this after activate so the change takes effect immediately on
+    the worker pod that handled the request."""
+    _PROMPT_CACHE.clear()

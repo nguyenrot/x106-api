@@ -10,7 +10,14 @@ class QuotaExceeded(StudioError):
 
 
 class LLMUpstreamError(StudioError):
-    pass
+    """Upstream LLM call failed. `http_status` carries the provider's HTTP
+    response code when known (set by providers.py from APIStatusError) so the
+    retry classifier can distinguish 429/5xx (retryable) from 4xx (terminal)
+    and so the audit log can record it as a structured column."""
+
+    def __init__(self, message: str = "", *, http_status: int | None = None):
+        super().__init__(message)
+        self.http_status = http_status
 
 
 class LLMTimeoutError(StudioError):

@@ -73,6 +73,9 @@ class ArtSettingsUpdateSerializer(serializers.Serializer):
     proModel = serializers.CharField(required=False, allow_blank=False, max_length=64)
     allowedFlashModels = _ModelListField(required=False, role="flash")
     allowedProModels = _ModelListField(required=False, role="pro")
+    # Phase 1.5 right-size: per-call token budget. Pro 256..32000, flash 64..2000.
+    proMaxTokens = serializers.IntegerField(required=False, min_value=256, max_value=32_000)
+    flashMaxTokens = serializers.IntegerField(required=False, min_value=64, max_value=2_000)
 
     def validate_flashModel(self, value: str) -> str:
         return _validate_model_with_role(value, "flash")
