@@ -32,6 +32,11 @@ class LLMJobStatus(models.TextChoices):
     CANCELED = "canceled"
 
 
+class LLMPromptKind(models.TextChoices):
+    CHAT = "chat"
+    ROUTER = "router"
+
+
 class Artwork(models.Model):
     id = models.CharField(primary_key=True, max_length=36, default=new_id, editable=False)
     user = models.ForeignKey(
@@ -109,6 +114,10 @@ class LLMJob(models.Model):
     # generator. Stored as catalog ids (e.g. "opencode-go/kimi-k2.6").
     flash_model = models.CharField(max_length=64, null=True, blank=True)
     pro_model = models.CharField(max_length=64, null=True, blank=True)
+    # Celery task id captured at enqueue time so admin cancel can revoke(terminate=True).
+    celery_task_id = models.CharField(max_length=64, null=True, blank=True)
+    # Snapshot of active LLMPromptVersion at job-start time (audit / forensics).
+    prompt_version_id = models.BigIntegerField(null=True, blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
     started_at = models.DateTimeField(null=True, blank=True)
     finished_at = models.DateTimeField(null=True, blank=True)
@@ -119,6 +128,7 @@ class LLMJob(models.Model):
         indexes = [
             models.Index(fields=["status", "created_at"], name="idx_llm_jobs_status_created"),
             models.Index(fields=["user_id", "created_at"], name="idx_llm_jobs_user_created"),
+            models.Index(fields=["prompt_version_id"], name="idx_llm_jobs_prompt_ver"),
         ]
 
 
@@ -143,6 +153,14 @@ class LLMRequestLog(models.Model):
     prompt_tokens = models.IntegerField(default=0)
     completion_tokens = models.IntegerField(default=0)
     total_tokens = models.IntegerField(default=0)
+    # HTTP status from the upstream provider (e.g. 200, 429, 500). NULL when the
+    # call never made a response (network error, JSON parse before status known).
+    http_status = models.SmallIntegerField(null=True, blank=True)
+    # Snapshot of LLMPromptVersion in effect when this attempt fired.
+    prompt_version_id = models.BigIntegerField(null=True, blank=True)
+    # Computed cost in cents (prompt_tokens × rate + completion_tokens × rate).
+    # NULL if the model lacks a known rate.
+    cost_cents = models.IntegerField(null=True, blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
 
     class Meta:
@@ -151,4 +169,37 @@ class LLMRequestLog(models.Model):
         indexes = [
             models.Index(fields=["created_at"], name="idx_llm_logs_created"),
             models.Index(fields=["user_id", "created_at"], name="idx_llm_logs_user"),
+            models.Index(fields=["status", "created_at"], name="idx_llm_logs_status_created"),
+            models.Index(fields=["model", "created_at"], name="idx_llm_logs_model_created"),
+        ]
+
+
+class LLMPromptVersion(models.Model):
+    """Versioned system prompts for chat (pro) and router (flash) LLM calls.
+
+    Exactly one row per `kind` may have `is_active=True` (partial unique).
+    The worker snapshots `prompt_version_id` onto LLMJob + LLMRequestLog so the
+    audit trail survives later prompt edits. Fallback path in services/prompts.py
+    returns the hardcoded Python constant if no active row exists yet."""
+
+    id = models.BigAutoField(primary_key=True)
+    kind = models.CharField(max_length=16, choices=LLMPromptKind.choices)
+    body = models.TextField()
+    notes = models.CharField(max_length=240, blank=True, default="")
+    created_by = models.CharField(max_length=64, blank=True, default="")
+    created_at = models.DateTimeField(auto_now_add=True)
+    is_active = models.BooleanField(default=False)
+
+    class Meta:
+        db_table = "llm_prompt_versions"
+        ordering = ["-created_at"]
+        indexes = [
+            models.Index(fields=["kind", "-created_at"], name="idx_promptver_kind_created"),
+        ]
+        constraints = [
+            models.UniqueConstraint(
+                fields=["kind"],
+                condition=models.Q(is_active=True),
+                name="uq_promptver_active_per_kind",
+            ),
         ]
