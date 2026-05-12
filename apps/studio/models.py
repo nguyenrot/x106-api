@@ -104,6 +104,11 @@ class LLMJob(models.Model):
     result_message = models.TextField(null=True, blank=True)
     error_message = models.CharField(max_length=500, null=True, blank=True)
     attempt = models.IntegerField(default=0)
+    # Per-job model selection. NULL = "resolve admin default when the worker
+    # runs". `flash_model` is the intent router, `pro_model` is the scene
+    # generator. Stored as catalog ids (e.g. "opencode-go/kimi-k2.6").
+    flash_model = models.CharField(max_length=64, null=True, blank=True)
+    pro_model = models.CharField(max_length=64, null=True, blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
     started_at = models.DateTimeField(null=True, blank=True)
     finished_at = models.DateTimeField(null=True, blank=True)

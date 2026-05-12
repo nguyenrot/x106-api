@@ -33,7 +33,18 @@ from .serializers import (
     LLMSubmitSerializer,
     PublicArtworkSerializer,
 )
-from .settings_keys import effective_daily_limit, llm_enabled
+from .services.model_catalog import all_models
+from .settings_keys import (
+    ModelNotAllowed,
+    RouterModelNotDrawable,
+    allowed_flash_models,
+    allowed_pro_models,
+    effective_daily_limit,
+    effective_flash_model,
+    effective_pro_model,
+    llm_enabled,
+    resolve_pro_model,
+)
 from .tasks import run_llm_job
 
 log = logging.getLogger("x106.studio.views")
@@ -124,7 +135,7 @@ class LLMViewSet(viewsets.ViewSet):
 
     @action(detail=False, methods=["post"], url_path="job")
     def submit_job(self, request):
-        if not settings.DEEPSEEK_API_KEY:
+        if not (settings.DEEPSEEK_API_KEY or settings.OPENCODE_API_KEY):
             return Response(
                 {"error": "AI mode not configured"},
                 status=status.HTTP_503_SERVICE_UNAVAILABLE,
@@ -138,6 +149,32 @@ class LLMViewSet(viewsets.ViewSet):
         serializer = LLMSubmitSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
         body = serializer.validated_data
+
+        # Validate pro_model override up front — before reserving quota — so a
+        # bad model selection can't waste a daily request slot.
+        try:
+            resolved_pro = resolve_pro_model(body.get("proModel"))
+        except RouterModelNotDrawable as exc:
+            return Response(
+                {
+                    "error": "router_model_not_drawable",
+                    "message": (
+                        f'Model "{exc.label}" chỉ phân loại ý định, không vẽ '
+                        "được. Hãy chọn model khác để vẽ 3D."
+                    ),
+                    "model": exc.model_id,
+                },
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        except ModelNotAllowed as exc:
+            return Response(
+                {
+                    "error": "model_not_allowed",
+                    "message": "Model này không được cấu hình cho user override.",
+                    "model": exc.model_id,
+                },
+                status=status.HTTP_400_BAD_REQUEST,
+            )
 
         limit = effective_daily_limit()
         try:
@@ -161,11 +198,30 @@ class LLMViewSet(viewsets.ViewSet):
             username=request.user.username,
             mode=body["mode"],
             request_body=request_body_payload,
+            pro_model=resolved_pro,
         )
         run_llm_job.delay(job.id)
         return Response(
             {"jobId": job.id, "used": used, "remaining": remaining, "limit": limit},
             status=status.HTTP_202_ACCEPTED,
+        )
+
+    @action(detail=False, methods=["get"], url_path="models")
+    def models(self, _request):
+        """Catalog + admin allow-lists + defaults. The chat picker reads this
+        once on first open to build its dropdown."""
+        catalog = [
+            {"id": m.id, "label": m.label, "role": m.role, "provider": m.provider}
+            for m in all_models()
+        ]
+        return Response(
+            {
+                "catalog": catalog,
+                "allowedFlash": allowed_flash_models(),
+                "allowedPro": allowed_pro_models(),
+                "defaultFlash": effective_flash_model(),
+                "defaultPro": effective_pro_model(),
+            }
         )
 
     @action(detail=False, methods=["get"], url_path=r"job/(?P<job_id>[^/]+)")

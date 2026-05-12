@@ -185,6 +185,12 @@ class LLMSubmitSerializer(serializers.Serializer):
     history = serializers.ListField(
         required=False, child=ChatTurnSerializer(), max_length=4
     )
+    # Optional user override — gets validated against the admin allow-list +
+    # role in the view (RouterModelNotDrawable / ModelNotAllowed are surfaced
+    # as 400s with a discriminator). Empty string = "use admin default".
+    proModel = serializers.CharField(
+        required=False, allow_blank=True, allow_null=True, max_length=64
+    )
 
 
 class LLMJobSubmitResponseSerializer(serializers.Serializer):

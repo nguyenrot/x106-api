@@ -17,14 +17,23 @@ from rest_framework.response import Response
 
 from apps.core.permissions import IsAdminToken
 from apps.studio.models import LLMJob, LLMRequestLog
+from apps.studio.services.model_catalog import all_models, get_model
 from apps.studio.settings_keys import (
     ALLOWED_LLM_MODELS,
     SETTING_LLM_DAILY_LIMIT,
     SETTING_LLM_ENABLED,
+    SETTING_LLM_FLASH_MODEL,
     SETTING_LLM_MODEL,
+    SETTING_LLM_PRO_MODEL,
+    allowed_flash_models,
+    allowed_pro_models,
     effective_daily_limit,
+    effective_flash_model,
     effective_model,
+    effective_pro_model,
     llm_enabled,
+    set_allowed_flash_models,
+    set_allowed_pro_models,
     set_setting,
 )
 
@@ -48,13 +57,26 @@ def _iso_or_blank(dt) -> str:
 
 
 def _settings_payload() -> dict:
+    catalog = [
+        {"id": m.id, "label": m.label, "role": m.role, "provider": m.provider}
+        for m in all_models()
+    ]
     return {
         "dailyLimit": effective_daily_limit(),
         "enabled": llm_enabled(),
-        "configured": bool(dj_settings.DEEPSEEK_API_KEY),
-        "model": effective_model(),
+        "configured": bool(dj_settings.DEEPSEEK_API_KEY or dj_settings.OPENCODE_API_KEY),
+        "deepseekConfigured": bool(dj_settings.DEEPSEEK_API_KEY),
+        "opencodeConfigured": bool(dj_settings.OPENCODE_API_KEY),
+        # Legacy fields — admin UI built for the old single-model surface still works.
+        "model": effective_pro_model(),
         "models": list(ALLOWED_LLM_MODELS),
         "baseUrl": dj_settings.DEEPSEEK_BASE_URL,
+        # New fields.
+        "catalog": catalog,
+        "flashModel": effective_flash_model(),
+        "proModel": effective_pro_model(),
+        "allowedFlashModels": allowed_flash_models(),
+        "allowedProModels": allowed_pro_models(),
     }
 
 
@@ -120,7 +142,18 @@ class AdminArtViewSet(viewsets.ViewSet):
         if "enabled" in data:
             set_setting(SETTING_LLM_ENABLED, "on" if data["enabled"] else "off")
         if "model" in data:
+            # Legacy field — write to both legacy and new pro_model so the new
+            # readers pick it up.
             set_setting(SETTING_LLM_MODEL, data["model"])
+            set_setting(SETTING_LLM_PRO_MODEL, data["model"])
+        if "proModel" in data:
+            set_setting(SETTING_LLM_PRO_MODEL, data["proModel"])
+        if "flashModel" in data:
+            set_setting(SETTING_LLM_FLASH_MODEL, data["flashModel"])
+        if "allowedProModels" in data:
+            set_allowed_pro_models(data["allowedProModels"])
+        if "allowedFlashModels" in data:
+            set_allowed_flash_models(data["allowedFlashModels"])
         return Response(_settings_payload())
 
     # ─── DeepSeek call logs ────────────────────────────────────────────

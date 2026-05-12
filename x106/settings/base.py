@@ -128,6 +128,15 @@ DEEPSEEK_API_KEY = env.str("DEEPSEEK_API_KEY", default="")
 DEEPSEEK_BASE_URL = env.str("DEEPSEEK_BASE_URL", default="https://api.deepseek.com")
 DEEPSEEK_MODEL = env.str("DEEPSEEK_MODEL", default="deepseek-v4-pro")
 DEEPSEEK_FLASH_MODEL = env.str("DEEPSEEK_FLASH_MODEL", default="deepseek-v4-flash")
+# OpenCode Go — same key works for both the OpenAI- and Anthropic-compatible
+# endpoints; the bare /v1 root is the OpenAI-compat path, /v1/messages is
+# Anthropic-compat (see services/providers.py).
+OPENCODE_API_KEY = env.str("OPENCODE_API_KEY", default="")
+OPENCODE_BASE_URL = env.str("OPENCODE_BASE_URL", default="https://opencode.ai/zen/go/v1")
+OPENCODE_ANTHROPIC_BASE_URL = env.str(
+    "OPENCODE_ANTHROPIC_BASE_URL",
+    default="https://opencode.ai/zen/go/v1",
+)
 LLM_DAILY_LIMIT = env.int("LLM_DAILY_LIMIT", default=5)
 
 # ─── DRF & SimpleJWT ──────────────────────────────────────────────────────

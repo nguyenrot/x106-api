@@ -17,7 +17,7 @@ from django.utils import timezone
 from . import quota
 from .errors import LLMOffError, LLMUpstreamError, SceneValidationError
 from .models import LLMJob, LLMJobStatus
-from .services.deepseek import call_deepseek
+from .services.llm import call_llm
 
 # Load sibling task modules so Celery's autodiscover (which only imports
 # `tasks.py` per INSTALLED_APP) sees the beat-scheduled maintenance tasks.
@@ -52,12 +52,14 @@ def run_llm_job(self, job_id: str) -> None:
     mode = job.mode
 
     try:
-        scene, assistant_message = call_deepseek(
+        scene, assistant_message = call_llm(
             user_id=job.user_id,
             username=job.username,
             user_message=body.get("userMessage") or "",
             current_scene=body.get("currentScene"),
             history=body.get("history"),
+            flash_model=job.flash_model or None,
+            pro_model=job.pro_model or None,
         )
     except SoftTimeLimitExceeded:
         log.error("run_llm_job: %s soft-time-limit", job_id)
