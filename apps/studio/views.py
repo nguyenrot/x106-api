@@ -33,6 +33,8 @@ from .serializers import (
 )
 from .services.model_catalog import all_models
 from .settings_keys import (
+    ModelDeprecated,
+    ModelDisabled,
     ModelNotAllowed,
     RouterModelNotDrawable,
     allowed_flash_models,
@@ -157,8 +159,28 @@ class LLMViewSet(viewsets.ViewSet):
                 {
                     "error": "router_model_not_drawable",
                     "message": (
-                        f'Model "{exc.label}" chỉ phân loại ý định, không vẽ '
-                        "được. Hãy chọn model khác để vẽ 3D."
+                        f'Model "{exc.label}" is a router (intent classifier), '
+                        "not a drawer. Pick a different model to render 3D."
+                    ),
+                    "model": exc.model_id,
+                },
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        except ModelDisabled as exc:
+            return Response(
+                {
+                    "error": "model_disabled",
+                    "message": f'Model "{exc.label}" is disabled. Pick a different model.',
+                    "model": exc.model_id,
+                },
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        except ModelDeprecated as exc:
+            return Response(
+                {
+                    "error": "model_deprecated",
+                    "message": (
+                        f'Model "{exc.label}" is deprecated. Pick a current model.'
                     ),
                     "model": exc.model_id,
                 },
@@ -168,7 +190,7 @@ class LLMViewSet(viewsets.ViewSet):
             return Response(
                 {
                     "error": "model_not_allowed",
-                    "message": "Model này không được cấu hình cho user override.",
+                    "message": "Model is not enabled for user override.",
                     "model": exc.model_id,
                 },
                 status=status.HTTP_400_BAD_REQUEST,
@@ -211,19 +233,50 @@ class LLMViewSet(viewsets.ViewSet):
 
     @action(detail=False, methods=["get"], url_path="models")
     def models(self, _request):
-        """Catalog + admin allow-lists + defaults. The chat picker reads this
-        once on first open to build its dropdown."""
+        """Phase 4.3 v2: chat picker shows only drawable models (pro/both),
+        each with badges + description. Flash-only models are hidden by
+        design — defense-in-depth on top of resolve_pro_model's RouterModel
+        guard. Default model is flagged via `isDefault=true`.
+
+        Legacy fields (`catalog`, `allowedFlash`, `allowedPro`, `defaultFlash`,
+        `defaultPro`) are kept for one deploy cycle so older clients keep
+        working while the art frontend rolls forward.
+        """
+        from .services.model_catalog import (
+            user_picker_models,  # local import — avoid top-level cycle in case of refactor
+        )
+        default_pro = effective_pro_model()
+        v2_models = [
+            {
+                "id": row["slug"],
+                "name": row["display_name"],
+                "description": row["description"] or "",
+                "badges": {
+                    "speed": row["speed_badge"] or "",
+                    "quality": row["quality_badge"] or "",
+                    "cost": row["cost_badge"] or "",
+                },
+                "beta": bool(row["beta"]),
+                "isDefault": row["slug"] == default_pro,
+            }
+            for row in user_picker_models()
+        ]
+        # Legacy shape — older clients still consume these.
         catalog = [
             {"id": m.id, "label": m.label, "role": m.role, "provider": m.provider}
             for m in all_models()
         ]
         return Response(
             {
+                "version": 2,
+                "models": v2_models,
+                "auto": {"id": None, "label": "Auto"},
+                # Legacy fields.
                 "catalog": catalog,
                 "allowedFlash": allowed_flash_models(),
                 "allowedPro": allowed_pro_models(),
                 "defaultFlash": effective_flash_model(),
-                "defaultPro": effective_pro_model(),
+                "defaultPro": default_pro,
             }
         )
 

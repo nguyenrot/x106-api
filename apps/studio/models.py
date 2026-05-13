@@ -203,3 +203,72 @@ class LLMPromptVersion(models.Model):
                 name="uq_promptver_active_per_kind",
             ),
         ]
+
+
+class LLMProvider(models.TextChoices):
+    DEEPSEEK = "deepseek"
+    OPENCODE_OPENAI = "opencode_openai"
+    OPENCODE_ANTHROPIC = "opencode_anthropic"
+
+
+class LLMRole(models.TextChoices):
+    FLASH = "flash"
+    PRO = "pro"
+    BOTH = "both"
+
+
+class LLMModel(models.Model):
+    """DB-backed model catalog (Phase 4). Replaces the static tuple in
+    services/model_catalog.py — admin can now add/disable/badge models via
+    the admin UI without a deploy. The runtime helper get_active_models()
+    keeps an in-process cache (60s TTL) so per-request lookup stays cheap.
+
+    Defaults are mutex per role via partial unique constraints — exactly one
+    `is_default_pro=True` row, exactly one `is_default_flash=True`. The
+    fallback path in services/model_catalog.py returns the hardcoded Python
+    constant if the table is empty (boot-safe)."""
+
+    id = models.BigAutoField(primary_key=True)
+    slug = models.CharField(max_length=80, unique=True)
+    display_name = models.CharField(max_length=80)
+    provider = models.CharField(max_length=32, choices=LLMProvider.choices)
+    remote_id = models.CharField(max_length=120)
+    role = models.CharField(max_length=8, choices=LLMRole.choices)
+    description = models.CharField(max_length=240, blank=True, default="")
+    # Badges shown in the user picker. Frontend renders glyphs based on value;
+    # validation is done at the API layer (admin write path).
+    speed_badge = models.CharField(max_length=16, blank=True, default="")  # fast | normal | slow
+    quality_badge = models.CharField(max_length=16, blank=True, default="")  # good | great | best
+    cost_badge = models.CharField(max_length=16, blank=True, default="")  # cheap | normal | premium
+    enabled = models.BooleanField(default=True)
+    is_default_pro = models.BooleanField(default=False)
+    is_default_flash = models.BooleanField(default=False)
+    allowed_for_users = models.BooleanField(default=False)
+    deprecated = models.BooleanField(default=False)
+    beta = models.BooleanField(default=False)
+    prompt_cents_per_mtok = models.IntegerField(null=True, blank=True)
+    completion_cents_per_mtok = models.IntegerField(null=True, blank=True)
+    max_tokens_override = models.IntegerField(null=True, blank=True)
+    sort_order = models.SmallIntegerField(default=100)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        db_table = "llm_models"
+        ordering = ["sort_order", "display_name"]
+        indexes = [
+            models.Index(fields=["enabled", "allowed_for_users"], name="idx_llmmodel_listing"),
+            models.Index(fields=["role"], name="idx_llmmodel_role"),
+        ]
+        constraints = [
+            models.UniqueConstraint(
+                fields=["is_default_pro"],
+                condition=models.Q(is_default_pro=True),
+                name="uq_llmmodel_default_pro",
+            ),
+            models.UniqueConstraint(
+                fields=["is_default_flash"],
+                condition=models.Q(is_default_flash=True),
+                name="uq_llmmodel_default_flash",
+            ),
+        ]

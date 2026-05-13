@@ -17,7 +17,11 @@ from .models import AppSetting
 from .services.model_catalog import (
     ModelSpec,
     all_models,
+    all_models_full,
+    get_default_flash_slug,
+    get_default_pro_slug,
     get_model,
+    get_model_full,
     is_known_model,
     models_for_role,
     supports_role,
@@ -131,6 +135,12 @@ def _read_model_setting(primary_key: str, fallback_keys: tuple[str, ...] = ()) -
 
 
 def effective_pro_model() -> str:
+    # Phase 4: DB-driven catalog is the source of truth. AppSetting + env are
+    # kept as fallbacks for one deploy cycle (rollback path); they'll be
+    # removed in a follow-up migration.
+    db_default = get_default_pro_slug()
+    if db_default:
+        return db_default
     stored = _read_model_setting(SETTING_LLM_PRO_MODEL, (SETTING_LLM_MODEL,))
     if stored and supports_role(stored, "pro"):
         return stored
@@ -141,6 +151,9 @@ def effective_pro_model() -> str:
 
 
 def effective_flash_model() -> str:
+    db_default = get_default_flash_slug()
+    if db_default:
+        return db_default
     stored = _read_model_setting(SETTING_LLM_FLASH_MODEL)
     if stored and supports_role(stored, "flash"):
         return stored
@@ -177,10 +190,25 @@ def _default_allow_list(role: str) -> list[str]:
 
 
 def allowed_pro_models() -> list[str]:
+    # Phase 4: DB-driven catalog. Returns models flagged allowed_for_users with
+    # pro/both role that are enabled + not deprecated. Falls back to legacy
+    # JSON AppSetting for the deploy cycle before the seed migration runs.
+    db_rows = [
+        row for row in all_models_full()
+        if row["enabled"] and row["allowed_for_users"] and not row["deprecated"]
+        and row["role"] in ("pro", "both")
+    ]
+    if db_rows:
+        # Always include the current effective default so a misconfigured row
+        # set can't lock the admin out of their own model.
+        ids = [r["slug"] for r in db_rows]
+        default = effective_pro_model()
+        if default not in ids:
+            ids = [default, *ids]
+        return ids
+
     stored = _parse_allowed_setting(SETTING_LLM_ALLOWED_PRO)
     if stored:
-        # Always include the current effective default so a misconfigured allow-list
-        # can't lock the admin out of their own model.
         default = effective_pro_model()
         if default not in stored:
             stored = [default, *stored]
@@ -189,6 +217,18 @@ def allowed_pro_models() -> list[str]:
 
 
 def allowed_flash_models() -> list[str]:
+    db_rows = [
+        row for row in all_models_full()
+        if row["enabled"] and row["allowed_for_users"] and not row["deprecated"]
+        and row["role"] in ("flash", "both")
+    ]
+    if db_rows:
+        ids = [r["slug"] for r in db_rows]
+        default = effective_flash_model()
+        if default not in ids:
+            ids = [default, *ids]
+        return ids
+
     stored = _parse_allowed_setting(SETTING_LLM_ALLOWED_FLASH)
     if stored:
         default = effective_flash_model()
@@ -228,13 +268,34 @@ class ModelNotAllowed(ValueError):
         self.model_id = model_id
 
 
+class ModelDisabled(ValueError):
+    """Raised when a user submits a model that admin has disabled."""
+
+    def __init__(self, model_id: str, label: str):
+        super().__init__(model_id)
+        self.model_id = model_id
+        self.label = label
+
+
+class ModelDeprecated(ValueError):
+    """Raised when a user submits a model marked deprecated. Distinct from
+    Disabled so the UI can suggest the new default."""
+
+    def __init__(self, model_id: str, label: str):
+        super().__init__(model_id)
+        self.model_id = model_id
+        self.label = label
+
+
 def resolve_pro_model(requested: str | None) -> str:
-    """Validate user-supplied pro model against (a) catalog, (b) role, (c) allow-list.
+    """Validate user-supplied pro model against the DB-driven catalog.
 
     Returns the resolved model id (defaults to effective_pro_model() when None).
-    Raises:
-      - RouterModelNotDrawable if the model exists but is flash-only
-      - ModelNotAllowed if the model is not in the admin allow-list
+    Raises (most specific first):
+      - RouterModelNotDrawable when role=flash (defense-in-depth; user picker
+        no longer surfaces flash models post-Phase 4, but old clients might).
+      - ModelDisabled / ModelDeprecated for explicit admin states.
+      - ModelNotAllowed when not in the admin allow-list (or unknown).
     """
     if not requested:
         return effective_pro_model()
@@ -243,6 +304,12 @@ def resolve_pro_model(requested: str | None) -> str:
         raise ModelNotAllowed(requested)
     if spec.role == "flash":
         raise RouterModelNotDrawable(requested, spec.label)
+    full = get_model_full(requested)
+    if full is not None:
+        if not full["enabled"]:
+            raise ModelDisabled(requested, full["display_name"])
+        if full["deprecated"]:
+            raise ModelDeprecated(requested, full["display_name"])
     if requested not in allowed_pro_models():
         raise ModelNotAllowed(requested)
     return requested

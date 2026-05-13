@@ -6,12 +6,9 @@ collation (incompatible with the studio tables' unicode_ci)."""
 
 from __future__ import annotations
 
-from datetime import timedelta
-
 from django.db import connection
 
 from apps.core.tz import local_today_str
-
 
 LIST_ART_USERS_SQL = """
     SELECT u.id,
