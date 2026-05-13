@@ -58,8 +58,26 @@ def get_setting(key: str) -> str:
     return row.value if row else ""
 
 
-def set_setting(key: str, value: str) -> None:
+def set_setting(key: str, value: str, *, changed_by: str = "") -> None:
+    """Write a setting + Phase 3.6 audit row. `changed_by` should be the admin
+    username when called from the admin views; empty for migrations/scripts."""
+    # Read old value before update so the audit row has both sides of the diff.
+    old = AppSetting.objects.filter(name=key).values_list("value", flat=True).first()
     AppSetting.objects.update_or_create(name=key, defaults={"value": value})
+    if (old or "") == value:
+        return  # no-op write; skip audit row to keep log clean
+    # Local import — AppSettingChange lives in the same app but loading at module
+    # init would cycle through the model registry.
+    from .models import AppSettingChange
+    try:
+        AppSettingChange.objects.create(
+            setting_name=key[:80],
+            old_value=old,
+            new_value=value,
+            changed_by=(changed_by or "")[:64],
+        )
+    except Exception:  # noqa: BLE001 — audit must never block writes
+        pass
 
 
 def delete_setting(key: str) -> None:

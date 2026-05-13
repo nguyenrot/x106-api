@@ -18,7 +18,15 @@ from rest_framework.response import Response
 
 from apps.core.permissions import IsAdminToken
 from apps.studio import quota as studio_quota
-from apps.studio.models import LLMJob, LLMJobStatus, LLMModel, LLMPromptKind, LLMPromptVersion, LLMRequestLog
+from apps.studio.models import (
+    AppSettingChange,
+    LLMJob,
+    LLMJobStatus,
+    LLMModel,
+    LLMPromptKind,
+    LLMPromptVersion,
+    LLMRequestLog,
+)
 from apps.studio.services.model_catalog import (
     all_models,
     all_models_full,
@@ -149,28 +157,181 @@ class AdminArtViewSet(viewsets.ViewSet):
         serializer = ArtSettingsUpdateSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
         data = serializer.validated_data
+        who = _admin_label(request)
+        # Phase 3.6 — every set_setting carries changed_by so the audit table
+        # records who flipped each value.
         if "dailyLimit" in data:
-            set_setting(SETTING_LLM_DAILY_LIMIT, str(data["dailyLimit"]))
+            set_setting(SETTING_LLM_DAILY_LIMIT, str(data["dailyLimit"]), changed_by=who)
         if "enabled" in data:
-            set_setting(SETTING_LLM_ENABLED, "on" if data["enabled"] else "off")
+            set_setting(SETTING_LLM_ENABLED, "on" if data["enabled"] else "off", changed_by=who)
         if "model" in data:
             # Legacy field — write to both legacy and new pro_model so the new
             # readers pick it up.
-            set_setting(SETTING_LLM_MODEL, data["model"])
-            set_setting(SETTING_LLM_PRO_MODEL, data["model"])
+            set_setting(SETTING_LLM_MODEL, data["model"], changed_by=who)
+            set_setting(SETTING_LLM_PRO_MODEL, data["model"], changed_by=who)
         if "proModel" in data:
-            set_setting(SETTING_LLM_PRO_MODEL, data["proModel"])
+            set_setting(SETTING_LLM_PRO_MODEL, data["proModel"], changed_by=who)
         if "flashModel" in data:
-            set_setting(SETTING_LLM_FLASH_MODEL, data["flashModel"])
+            set_setting(SETTING_LLM_FLASH_MODEL, data["flashModel"], changed_by=who)
         if "allowedProModels" in data:
             set_allowed_pro_models(data["allowedProModels"])
         if "allowedFlashModels" in data:
             set_allowed_flash_models(data["allowedFlashModels"])
         if "proMaxTokens" in data:
-            set_setting(SETTING_LLM_PRO_MAX_TOKENS, str(data["proMaxTokens"]))
+            set_setting(SETTING_LLM_PRO_MAX_TOKENS, str(data["proMaxTokens"]), changed_by=who)
         if "flashMaxTokens" in data:
-            set_setting(SETTING_LLM_FLASH_MAX_TOKENS, str(data["flashMaxTokens"]))
+            set_setting(SETTING_LLM_FLASH_MAX_TOKENS, str(data["flashMaxTokens"]), changed_by=who)
         return Response(_settings_payload())
+
+    @action(detail=False, methods=["get"], url_path="stats/timeseries")
+    def stats_timeseries(self, request):
+        """Phase 3.3 — bucketed counts + latency P50/P95 + cost per model.
+
+        Query params:
+          window: 24h | 7d | 30d (default 24h)
+          bucket: hour | day (default: hour for 24h, day otherwise)
+          group_by: model | status (default model)
+
+        Real percentile via SQL window function — exact, not approximated.
+        For small bucket × group cardinalities (≤ 50 × 24 ≈ 1200 rows) this
+        is fast even on the prod read-replica."""
+        from django.db import connection
+        window = request.query_params.get("window", "24h")
+        if window == "7d":
+            interval_sql = "INTERVAL 7 DAY"
+            default_bucket = "day"
+        elif window == "30d":
+            interval_sql = "INTERVAL 30 DAY"
+            default_bucket = "day"
+        else:
+            interval_sql = "INTERVAL 24 HOUR"
+            default_bucket = "hour"
+        bucket = request.query_params.get("bucket", default_bucket)
+        if bucket not in ("hour", "day"):
+            bucket = default_bucket
+        group_by = request.query_params.get("group_by", "model")
+        if group_by not in ("model", "status"):
+            group_by = "model"
+
+        bucket_fmt = "%Y-%m-%dT%H:00:00Z" if bucket == "hour" else "%Y-%m-%dT00:00:00Z"
+        sql = f"""
+            WITH ranked AS (
+                SELECT
+                    DATE_FORMAT(created_at, '{bucket_fmt}') AS bucket_ts,
+                    {group_by} AS dim,
+                    latency_ms,
+                    cost_cents,
+                    status,
+                    ROW_NUMBER() OVER (
+                        PARTITION BY DATE_FORMAT(created_at, '{bucket_fmt}'), {group_by}
+                        ORDER BY latency_ms
+                    ) AS rn,
+                    COUNT(*) OVER (
+                        PARTITION BY DATE_FORMAT(created_at, '{bucket_fmt}'), {group_by}
+                    ) AS total
+                FROM llm_request_logs
+                WHERE created_at > NOW() - {interval_sql}
+            )
+            SELECT
+                bucket_ts,
+                dim,
+                COUNT(*) AS cnt,
+                SUM(CASE WHEN status='success' THEN 1 ELSE 0 END) AS ok,
+                ROUND(AVG(latency_ms)) AS avg_ms,
+                MAX(CASE WHEN rn = GREATEST(CEIL(total*0.5), 1) THEN latency_ms END) AS p50_ms,
+                MAX(CASE WHEN rn = GREATEST(CEIL(total*0.95), 1) THEN latency_ms END) AS p95_ms,
+                MAX(CASE WHEN rn = GREATEST(CEIL(total*0.99), 1) THEN latency_ms END) AS p99_ms,
+                COALESCE(SUM(cost_cents), 0) AS cost
+            FROM ranked
+            GROUP BY bucket_ts, dim
+            ORDER BY bucket_ts ASC, cnt DESC
+        """
+        # Bucket map: { ts → { dim_value: stats } }
+        buckets: dict[str, dict] = {}
+        try:
+            with connection.cursor() as cur:
+                cur.execute(sql)
+                for ts, dim, cnt, ok, avg_ms, p50, p95, p99, cost in cur.fetchall():
+                    b = buckets.setdefault(ts, {"ts": ts, "count": 0, "successCount": 0, "totalCostCents": 0, "byKey": {}})
+                    b["count"] += int(cnt or 0)
+                    b["successCount"] += int(ok or 0)
+                    b["totalCostCents"] += int(cost or 0)
+                    b["byKey"][dim or "unknown"] = {
+                        "count": int(cnt or 0),
+                        "successCount": int(ok or 0),
+                        "avgMs": int(avg_ms or 0),
+                        "p50Ms": int(p50 or 0),
+                        "p95Ms": int(p95 or 0),
+                        "p99Ms": int(p99 or 0),
+                        "totalCostCents": int(cost or 0),
+                    }
+        except Exception as exc:  # noqa: BLE001
+            return Response({"error": str(exc), "buckets": []}, status=500)
+
+        # Also compute aggregate latency per bucket (across all dims) — useful
+        # for the requests/hour overview chart.
+        sql_agg = f"""
+            WITH ranked2 AS (
+                SELECT
+                    DATE_FORMAT(created_at, '{bucket_fmt}') AS bucket_ts,
+                    latency_ms,
+                    ROW_NUMBER() OVER (
+                        PARTITION BY DATE_FORMAT(created_at, '{bucket_fmt}')
+                        ORDER BY latency_ms
+                    ) AS rn,
+                    COUNT(*) OVER (
+                        PARTITION BY DATE_FORMAT(created_at, '{bucket_fmt}')
+                    ) AS total
+                FROM llm_request_logs
+                WHERE created_at > NOW() - {interval_sql}
+            )
+            SELECT
+                bucket_ts,
+                MAX(CASE WHEN rn = GREATEST(CEIL(total*0.5), 1) THEN latency_ms END) AS p50,
+                MAX(CASE WHEN rn = GREATEST(CEIL(total*0.95), 1) THEN latency_ms END) AS p95
+            FROM ranked2
+            GROUP BY bucket_ts
+        """
+        try:
+            with connection.cursor() as cur:
+                cur.execute(sql_agg)
+                for ts, p50, p95 in cur.fetchall():
+                    if ts in buckets:
+                        buckets[ts]["p50Ms"] = int(p50 or 0)
+                        buckets[ts]["p95Ms"] = int(p95 or 0)
+        except Exception:  # noqa: BLE001
+            pass
+
+        return Response({
+            "window": window,
+            "bucket": bucket,
+            "groupBy": group_by,
+            "buckets": [buckets[k] for k in sorted(buckets.keys())],
+        })
+
+    @action(detail=False, methods=["get"], url_path="settings/history")
+    def settings_history(self, request):
+        """Phase 3.6 — paginated audit log. Filter by setting_name + window."""
+        params = request.query_params
+        limit = max(min(int(params.get("limit") or 50), 200), 1)
+        qs = AppSettingChange.objects.all()
+        if params.get("key"):
+            qs = qs.filter(setting_name=params["key"])
+        if params.get("since"):
+            qs = qs.filter(changed_at__gte=params["since"])
+        rows = list(qs.order_by("-changed_at")[:limit])
+        items = [
+            {
+                "id": r.id,
+                "settingName": r.setting_name,
+                "oldValue": r.old_value or "",
+                "newValue": r.new_value or "",
+                "changedBy": r.changed_by or "",
+                "changedAt": _iso_or_blank(r.changed_at),
+            }
+            for r in rows
+        ]
+        return Response({"items": items})
 
     # ─── DeepSeek call logs ────────────────────────────────────────────
 
@@ -186,6 +347,23 @@ class AdminArtViewSet(viewsets.ViewSet):
             qs = qs.filter(mode=params["mode"])
         if params.get("status"):
             qs = qs.filter(status=params["status"])
+        # Phase 3.5 — ISO 8601 since/until window. Both optional.
+        if params.get("since"):
+            qs = qs.filter(created_at__gte=params["since"])
+        if params.get("until"):
+            qs = qs.filter(created_at__lte=params["until"])
+        # Phase 3.4 — content search via FULLTEXT virtual column (added in
+        # migration 0012). Only fires for queries ≥ 3 chars to dodge MySQL
+        # ft_min_token_size default (4); shorter queries fall back to LIKE.
+        q_term = (params.get("q") or "").strip()
+        if q_term:
+            if len(q_term) >= 4:
+                qs = qs.extra(
+                    where=["MATCH(user_message_text) AGAINST (%s IN NATURAL LANGUAGE MODE)"],
+                    params=[q_term],
+                )
+            else:
+                qs = qs.filter(user_message_text__icontains=q_term)
         total = qs.count()
         rows = list(qs.order_by("-id")[offset : offset + limit])
         items = [
@@ -250,6 +428,11 @@ class AdminArtViewSet(viewsets.ViewSet):
             qs = qs.filter(mode=params["mode"])
         if params.get("status"):
             qs = qs.filter(status=params["status"])
+        # Phase 3.5 — ISO 8601 since/until window. Both optional.
+        if params.get("since"):
+            qs = qs.filter(created_at__gte=params["since"])
+        if params.get("until"):
+            qs = qs.filter(created_at__lte=params["until"])
         total = qs.count()
         rows = list(qs.order_by("-created_at")[offset : offset + limit])
         items = []

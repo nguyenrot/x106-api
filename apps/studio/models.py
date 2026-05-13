@@ -98,6 +98,29 @@ class AppSetting(models.Model):
         db_table = "app_settings"
 
 
+class AppSettingChange(models.Model):
+    """Phase 3.6 — audit log for every set_setting() call. Recorded by the
+    settings service layer (apps/studio/settings_keys.set_setting) so admin
+    can review "who changed what when". Append-only; truncating is safe."""
+
+    id = models.BigAutoField(primary_key=True)
+    setting_name = models.CharField(max_length=80)
+    old_value = models.TextField(null=True, blank=True)
+    new_value = models.TextField(null=True, blank=True)
+    changed_by = models.CharField(max_length=64, blank=True, default="")
+    changed_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        db_table = "app_setting_changes"
+        ordering = ["-changed_at"]
+        indexes = [
+            models.Index(
+                fields=["setting_name", "-changed_at"],
+                name="idx_setchange_name_at",
+            ),
+        ]
+
+
 class LLMJob(models.Model):
     id = models.CharField(primary_key=True, max_length=36, default=new_id, editable=False)
     user_id = models.CharField(max_length=36)
@@ -161,6 +184,12 @@ class LLMRequestLog(models.Model):
     # Computed cost in cents (prompt_tokens × rate + completion_tokens × rate).
     # NULL if the model lacks a known rate.
     cost_cents = models.IntegerField(null=True, blank=True)
+    # Phase 3.4 — generated stored column extracting request_payload->>'userMessage'.
+    # Backed by FULLTEXT index for admin search. Django doesn't model GENERATED
+    # ALWAYS columns natively; we declare it as a plain TextField and the
+    # migration emits raw DDL. Marked managed-by-DB so Django won't try to
+    # populate it.
+    user_message_text = models.TextField(null=True, blank=True, editable=False)
     created_at = models.DateTimeField(auto_now_add=True)
 
     class Meta:
