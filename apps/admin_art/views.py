@@ -17,7 +17,8 @@ from rest_framework.decorators import action
 from rest_framework.response import Response
 
 from apps.core.permissions import IsAdminToken
-from apps.studio.models import LLMJob, LLMModel, LLMRequestLog
+from apps.studio import quota as studio_quota
+from apps.studio.models import LLMJob, LLMJobStatus, LLMModel, LLMPromptKind, LLMPromptVersion, LLMRequestLog
 from apps.studio.services.model_catalog import (
     all_models,
     all_models_full,
@@ -469,6 +470,194 @@ class AdminArtViewSet(viewsets.ViewSet):
         row.delete()
         clear_model_cache()
         return Response({"slug": model_id, "softDeleted": False})
+
+    # ─── Phase 3.2 job control ────────────────────────────────────────────
+
+    @action(detail=False, methods=["post"], url_path=r"jobs/(?P<job_id>[^/]+)/cancel")
+    def admin_cancel_job(self, _request, job_id: str | None = None):
+        """Admin cancel — same code path as the user-facing cancel (revoke +
+        conditional UPDATE) but bypasses user_id ownership check so an operator
+        can stop any stuck job."""
+        job = LLMJob.objects.filter(id=job_id).first()
+        if job is None:
+            return Response({"error": "not found"}, status=status.HTTP_404_NOT_FOUND)
+        if job.status == LLMJobStatus.PENDING:
+            updated = LLMJob.objects.filter(id=job_id, status=LLMJobStatus.PENDING).update(
+                status=LLMJobStatus.CANCELED,
+                finished_at=timezone.now(),
+                error_message="canceled by admin",
+            )
+            if updated:
+                studio_quota.refund(job.user_id)
+            return Response(
+                {"jobId": job.id, "status": LLMJobStatus.CANCELED, "refunded": bool(updated)}
+            )
+        if job.status == LLMJobStatus.PROCESSING:
+            updated = LLMJob.objects.filter(
+                id=job_id, status=LLMJobStatus.PROCESSING,
+            ).update(
+                status=LLMJobStatus.CANCELED,
+                finished_at=timezone.now(),
+                error_message="canceled by admin",
+            )
+            refunded = False
+            if updated and job.celery_task_id:
+                try:
+                    from celery import current_app
+                    current_app.control.revoke(
+                        job.celery_task_id, terminate=True, signal="SIGTERM"
+                    )
+                except Exception:  # noqa: BLE001
+                    pass
+                studio_quota.refund(job.user_id)
+                refunded = True
+            return Response(
+                {"jobId": job.id, "status": LLMJobStatus.CANCELED, "refunded": refunded}
+            )
+        return Response(
+            {"jobId": job.id, "status": job.status, "refunded": False, "noop": True}
+        )
+
+    @action(detail=False, methods=["post"], url_path=r"jobs/(?P<job_id>[^/]+)/retry")
+    def admin_retry_job(self, _request, job_id: str | None = None):
+        """Clone a terminal job into a fresh pending row + enqueue. Admin debug
+        retries don't charge the user's quota — set bypass via direct create
+        without quota.reserve(). Old row keeps its audit trail intact."""
+        from apps.core.ids import new_id
+        from apps.studio.tasks import run_llm_job
+
+        old = LLMJob.objects.filter(id=job_id).first()
+        if old is None:
+            return Response({"error": "not found"}, status=status.HTTP_404_NOT_FOUND)
+        if old.status not in (LLMJobStatus.FAILED, LLMJobStatus.CANCELED):
+            return Response(
+                {"error": "can only retry failed/canceled jobs"},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        new_job = LLMJob.objects.create(
+            id=new_id(),
+            user_id=old.user_id,
+            username=old.username,
+            mode=old.mode,
+            request_body=old.request_body,
+            pro_model=old.pro_model,
+            flash_model=old.flash_model,
+        )
+        async_result = run_llm_job.delay(new_job.id)
+        LLMJob.objects.filter(id=new_job.id).update(celery_task_id=async_result.id)
+        return Response(
+            {"jobId": new_job.id, "clonedFrom": old.id, "status": LLMJobStatus.PENDING},
+            status=status.HTTP_202_ACCEPTED,
+        )
+
+    # ─── Phase 3.1 prompt version management ──────────────────────────────
+
+    @action(detail=False, methods=["get"], url_path="prompt-versions")
+    def list_prompt_versions(self, request):
+        kind = request.query_params.get("kind", "").strip()
+        qs = LLMPromptVersion.objects.all()
+        if kind in (LLMPromptKind.CHAT, LLMPromptKind.ROUTER):
+            qs = qs.filter(kind=kind)
+        limit = max(min(int(request.query_params.get("limit") or 50), 200), 1)
+        rows = list(qs.order_by("-created_at")[:limit])
+        return Response({
+            "items": [_prompt_payload(r, body_preview=True) for r in rows],
+        })
+
+    @action(detail=False, methods=["get"], url_path=r"prompt-versions/(?P<pv_id>\d+)")
+    def get_prompt_version(self, _request, pv_id: str | None = None):
+        row = LLMPromptVersion.objects.filter(id=pv_id).first()
+        if row is None:
+            return Response({"error": "not found"}, status=status.HTTP_404_NOT_FOUND)
+        return Response(_prompt_payload(row, body_preview=False))
+
+    @action(detail=False, methods=["post"], url_path="prompt-versions")
+    def create_prompt_version(self, request):
+        """Create a new prompt version. If activate=true, deactivates other
+        rows of the same kind (mutex per kind enforced by partial unique
+        constraint at DB level + explicit deactivate inside transaction)."""
+        from django.db import transaction
+
+        from apps.studio.services.prompts import clear_prompt_cache
+
+        data = request.data or {}
+        kind = (data.get("kind") or "").strip()
+        body = data.get("body") or ""
+        if kind not in (LLMPromptKind.CHAT, LLMPromptKind.ROUTER):
+            return Response({"error": "kind must be chat or router"}, status=status.HTTP_400_BAD_REQUEST)
+        if not body.strip():
+            return Response({"error": "body required"}, status=status.HTTP_400_BAD_REQUEST)
+        notes = (data.get("notes") or "")[:240]
+        activate = bool(data.get("activate", False))
+        created_by = _admin_label(request)[:64]
+
+        with transaction.atomic():
+            if activate:
+                LLMPromptVersion.objects.filter(kind=kind, is_active=True).update(is_active=False)
+            row = LLMPromptVersion.objects.create(
+                kind=kind, body=body, notes=notes,
+                created_by=created_by, is_active=activate,
+            )
+        clear_prompt_cache()
+        return Response(_prompt_payload(row, body_preview=False), status=status.HTTP_201_CREATED)
+
+    @action(detail=False, methods=["post"], url_path=r"prompt-versions/(?P<pv_id>\d+)/activate")
+    def activate_prompt_version(self, _request, pv_id: str | None = None):
+        from django.db import transaction
+
+        from apps.studio.services.prompts import clear_prompt_cache
+
+        row = LLMPromptVersion.objects.filter(id=pv_id).first()
+        if row is None:
+            return Response({"error": "not found"}, status=status.HTTP_404_NOT_FOUND)
+        with transaction.atomic():
+            LLMPromptVersion.objects.filter(kind=row.kind, is_active=True).update(is_active=False)
+            LLMPromptVersion.objects.filter(id=pv_id).update(is_active=True)
+        clear_prompt_cache()
+        return Response({"id": row.id, "kind": row.kind, "isActive": True})
+
+    @action(detail=False, methods=["delete"], url_path=r"prompt-versions/(?P<pv_id>\d+)")
+    def delete_prompt_version(self, _request, pv_id: str | None = None):
+        row = LLMPromptVersion.objects.filter(id=pv_id).first()
+        if row is None:
+            return Response({"error": "not found"}, status=status.HTTP_404_NOT_FOUND)
+        if row.is_active:
+            return Response(
+                {"error": "cannot delete active version; activate a different one first"},
+                status=status.HTTP_409_CONFLICT,
+            )
+        # FK check — refuse delete if any log references this version.
+        if LLMRequestLog.objects.filter(prompt_version_id=row.id).exists():
+            return Response(
+                {"error": "log rows reference this version; cannot delete"},
+                status=status.HTTP_409_CONFLICT,
+            )
+        row.delete()
+        return Response({"id": int(pv_id), "deleted": True})
+
+
+def _admin_label(request) -> str:
+    """Best-effort 'who edited' for created_by audit. Falls back to '?' when
+    the JWT payload doesn't carry a username (shouldn't happen for admins)."""
+    user = getattr(request, "user", None)
+    if user is None:
+        return "?"
+    return getattr(user, "username", None) or str(getattr(user, "id", "?"))
+
+
+def _prompt_payload(row: LLMPromptVersion, body_preview: bool) -> dict:
+    body = row.body
+    if body_preview and len(body) > 200:
+        body = body[:200] + "…"
+    return {
+        "id": row.id,
+        "kind": row.kind,
+        "body": body,
+        "notes": row.notes or "",
+        "createdBy": row.created_by or "",
+        "createdAt": _iso_or_blank(row.created_at),
+        "isActive": row.is_active,
+    }
 
 
 def _model_payload(row: dict, stats: dict | None = None) -> dict:
