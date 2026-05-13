@@ -24,7 +24,7 @@ from . import quota
 from .errors import (
     QuotaExceeded,
 )
-from .models import Artwork, LLMJob, LLMJobStatus
+from .models import Artwork, LLMConversation, LLMConversationMessage, LLMJob, LLMJobStatus, LLMMessageRole
 from .serializers import (
     ArtworkSerializer,
     LLMQuotaSerializer,
@@ -356,3 +356,150 @@ class LLMViewSet(viewsets.ViewSet):
         return Response(
             {"jobId": job.id, "status": job.status, "refunded": False, "noop": True}
         )
+
+
+# ─── Phase 2.1 conversation persistence ─────────────────────────────────────
+
+CONVERSATION_CAP_PER_USER = 20  # auto-prune oldest non-pinned beyond this
+MESSAGE_LIMIT_PER_CONV = 200    # per-fetch page size
+
+
+class ConversationViewSet(viewsets.ViewSet):
+    """/api/v1/studio/conversations — per-user chat history.
+
+    Auto-prune at 20 non-pinned per user keeps the table tidy without forcing
+    the user to manually delete old threads. Messages stay until conversation
+    delete (CASCADE) so audit trail survives orphaned UI references."""
+
+    permission_classes = [IsAuthenticated]
+
+    def list(self, request):
+        rows = (
+            LLMConversation.objects
+            .filter(user_id=request.user.id)
+            .order_by("-pinned", "-updated_at")[:50]
+        )
+        items = []
+        for r in rows:
+            # Compute messageCount in one query per row — table sizes are small.
+            count = LLMConversationMessage.objects.filter(conversation_id=r.id).count()
+            items.append({
+                "id": r.id,
+                "title": r.title or "New chat",
+                "pinned": r.pinned,
+                "messageCount": count,
+                "updatedAt": r.updated_at.isoformat(),
+                "createdAt": r.created_at.isoformat(),
+            })
+        return Response({"items": items})
+
+    def retrieve(self, request, pk: str | None = None):
+        conv = LLMConversation.objects.filter(id=pk, user_id=request.user.id).first()
+        if conv is None:
+            return Response({"error": "not found"}, status=status.HTTP_404_NOT_FOUND)
+        messages = list(
+            LLMConversationMessage.objects
+            .filter(conversation_id=conv.id)
+            .order_by("created_at")[:MESSAGE_LIMIT_PER_CONV]
+        )
+        return Response({
+            "id": conv.id,
+            "title": conv.title or "New chat",
+            "pinned": conv.pinned,
+            "createdAt": conv.created_at.isoformat(),
+            "updatedAt": conv.updated_at.isoformat(),
+            "messages": [_serialize_message(m) for m in messages],
+        })
+
+    def create(self, request):
+        title = (request.data.get("title") or "")[:120]
+        conv = LLMConversation.objects.create(
+            user_id=request.user.id,
+            title=title,
+        )
+        # Auto-prune: keep only 20 non-pinned per user (oldest go first).
+        _prune_conversations(request.user.id)
+        return Response({
+            "id": conv.id,
+            "title": conv.title or "New chat",
+            "pinned": conv.pinned,
+            "createdAt": conv.created_at.isoformat(),
+            "updatedAt": conv.updated_at.isoformat(),
+        }, status=status.HTTP_201_CREATED)
+
+    def partial_update(self, request, pk: str | None = None):
+        conv = LLMConversation.objects.filter(id=pk, user_id=request.user.id).first()
+        if conv is None:
+            return Response({"error": "not found"}, status=status.HTTP_404_NOT_FOUND)
+        if "title" in request.data:
+            conv.title = (request.data.get("title") or "")[:120]
+        if "pinned" in request.data:
+            conv.pinned = bool(request.data["pinned"])
+        conv.save(update_fields=["title", "pinned", "updated_at"])
+        return Response({
+            "id": conv.id,
+            "title": conv.title or "New chat",
+            "pinned": conv.pinned,
+            "updatedAt": conv.updated_at.isoformat(),
+        })
+
+    def destroy(self, request, pk: str | None = None):
+        deleted, _ = LLMConversation.objects.filter(id=pk, user_id=request.user.id).delete()
+        if deleted == 0:
+            return Response({"error": "not found"}, status=status.HTTP_404_NOT_FOUND)
+        return Response({"id": pk, "deleted": True})
+
+    @action(detail=True, methods=["post"], url_path="messages")
+    def append_message(self, request, pk: str | None = None):
+        conv = LLMConversation.objects.filter(id=pk, user_id=request.user.id).first()
+        if conv is None:
+            return Response({"error": "not found"}, status=status.HTTP_404_NOT_FOUND)
+        role = (request.data.get("role") or "").strip()
+        if role not in (LLMMessageRole.USER, LLMMessageRole.ASSISTANT, LLMMessageRole.SYSTEM):
+            return Response({"error": "invalid role"}, status=status.HTTP_400_BAD_REQUEST)
+        content = (request.data.get("content") or "")[:8000]
+        if not content.strip() and role != LLMMessageRole.ASSISTANT:
+            # Allow empty assistant content (could be a failed-turn placeholder).
+            return Response({"error": "content required"}, status=status.HTTP_400_BAD_REQUEST)
+        msg = LLMConversationMessage.objects.create(
+            conversation_id=conv.id,
+            role=role,
+            content=content,
+            scene_snapshot=request.data.get("sceneSnapshot"),
+            applied_scene=bool(request.data.get("appliedScene", False)),
+            job_id=(request.data.get("jobId") or None),
+            error_kind=(request.data.get("errorKind") or None),
+        )
+        # Bump conversation updated_at so list endpoint sorts by recency.
+        LLMConversation.objects.filter(id=conv.id).update(updated_at=timezone.now())
+        # Auto-fill title from first user message if conv title is empty.
+        if not conv.title and role == LLMMessageRole.USER and content.strip():
+            LLMConversation.objects.filter(id=conv.id, title="").update(title=content[:60])
+        return Response(_serialize_message(msg), status=status.HTTP_201_CREATED)
+
+
+def _serialize_message(m: LLMConversationMessage) -> dict:
+    return {
+        "id": m.id,
+        "role": m.role,
+        "content": m.content,
+        "sceneSnapshot": m.scene_snapshot,
+        "appliedScene": m.applied_scene,
+        "jobId": m.job_id or None,
+        "errorKind": m.error_kind or None,
+        "createdAt": m.created_at.isoformat(),
+    }
+
+
+def _prune_conversations(user_id: str) -> None:
+    """Delete non-pinned conversations beyond the cap, oldest-first. Cheap —
+    runs after each create. CASCADE handles the messages."""
+    keep_ids = list(
+        LLMConversation.objects
+        .filter(user_id=user_id, pinned=False)
+        .order_by("-updated_at")
+        .values_list("id", flat=True)[:CONVERSATION_CAP_PER_USER]
+    )
+    LLMConversation.objects.filter(
+        user_id=user_id, pinned=False,
+    ).exclude(id__in=keep_ids).delete()

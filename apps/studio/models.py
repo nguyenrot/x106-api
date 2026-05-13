@@ -234,6 +234,57 @@ class LLMPromptVersion(models.Model):
         ]
 
 
+class LLMConversation(models.Model):
+    """Phase 2.1 — server-side conversation history. User can switch between
+    saved conversations and the canvas restores to the last scene snapshot."""
+
+    id = models.CharField(primary_key=True, max_length=36, default=new_id, editable=False)
+    user_id = models.CharField(max_length=36)
+    title = models.CharField(max_length=120, blank=True, default="")
+    pinned = models.BooleanField(default=False)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        db_table = "llm_conversations"
+        ordering = ["-updated_at"]
+        indexes = [
+            models.Index(fields=["user_id", "-updated_at"], name="idx_conv_user_updated"),
+        ]
+
+
+class LLMMessageRole(models.TextChoices):
+    USER = "user"
+    ASSISTANT = "assistant"
+    SYSTEM = "system"
+
+
+class LLMConversationMessage(models.Model):
+    id = models.CharField(primary_key=True, max_length=36, default=new_id, editable=False)
+    conversation = models.ForeignKey(
+        LLMConversation,
+        on_delete=models.CASCADE,
+        db_column="conversation_id",
+        related_name="messages",
+    )
+    role = models.CharField(max_length=16, choices=LLMMessageRole.choices)
+    content = models.TextField()
+    # Snapshot of the rendered scene at the time this assistant turn applied —
+    # used by the chat-history rail to restore the canvas on conversation switch.
+    scene_snapshot = models.JSONField(null=True, blank=True)
+    applied_scene = models.BooleanField(default=False)
+    job_id = models.CharField(max_length=36, null=True, blank=True)
+    error_kind = models.CharField(max_length=40, null=True, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        db_table = "llm_conversation_messages"
+        ordering = ["created_at"]
+        indexes = [
+            models.Index(fields=["conversation", "created_at"], name="idx_convmsg_conv_at"),
+        ]
+
+
 class LLMProvider(models.TextChoices):
     DEEPSEEK = "deepseek"
     OPENCODE_OPENAI = "opencode_openai"
