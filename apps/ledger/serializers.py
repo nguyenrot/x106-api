@@ -13,6 +13,9 @@ class LedgerAccountSerializer(serializers.ModelSerializer):
 
 
 class LedgerTransactionSerializer(serializers.ModelSerializer):
+    # Optional — perform_create fills in local_today() when missing.
+    occurred_on = serializers.DateField(required=False)
+
     class Meta:
         model = LedgerTransaction
         fields = ["id", "kind", "amount", "category", "note", "occurred_on", "created_at"]
