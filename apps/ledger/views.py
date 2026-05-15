@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-import secrets
-
 from rest_framework import status, viewsets
 from rest_framework.decorators import action
 from rest_framework.permissions import AllowAny, IsAuthenticated
@@ -14,33 +12,39 @@ from apps.core.tz import local_today
 
 from .auth import LedgerTokenAuthentication, hash_token
 from .models import LedgerAccount, LedgerCategory, LedgerTransaction
-from .serializers import LedgerAccountSerializer, LedgerTransactionSerializer
+from .serializers import (
+    CreateAccountSerializer,
+    LedgerAccountSerializer,
+    LedgerTransactionSerializer,
+)
 from .services import compute_summary, totals_for
 
 
-def _generate_token() -> str:
-    # 43-char URL-safe base64 string — opaque enough that brute-force is infeasible.
-    return secrets.token_urlsafe(32)
-
-
 class LedgerAccountCreateView(APIView):
-    """POST /ledger/accounts — public — mints a new token + account.
+    """POST /ledger/accounts — public — create account with a user-chosen token.
 
-    The raw token is returned exactly once; the server stores only its hash.
+    Body: {"token": "10-char-alnum"}. The raw token is never echoed back; the
+    server stores only its SHA-256 hash. 409 if the hash collides with an
+    existing account — pick a different token.
     """
 
     authentication_classes: list = []
     permission_classes = [AllowAny]
 
-    def post(self, _request):
-        raw = _generate_token()
-        account = LedgerAccount.objects.create(token_hash=hash_token(raw))
+    def post(self, request):
+        serializer = CreateAccountSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        raw = serializer.validated_data["token"]
+        token_hash = hash_token(raw)
+
+        if LedgerAccount.objects.filter(token_hash=token_hash).exists():
+            return Response(
+                {"error": "token_taken", "detail": "Token này đã có người dùng. Hãy chọn token khác."},
+                status=status.HTTP_409_CONFLICT,
+            )
+        account = LedgerAccount.objects.create(token_hash=token_hash)
         return Response(
-            {
-                "id": account.id,
-                "token": raw,
-                "created_at": account.created_at,
-            },
+            {"id": account.id, "created_at": account.created_at},
             status=status.HTTP_201_CREATED,
         )
 

@@ -6,6 +6,8 @@ plus the security-critical cases (no token / wrong token / cross-account isolati
 
 from __future__ import annotations
 
+import secrets
+import string
 from datetime import timedelta
 
 import pytest
@@ -14,6 +16,12 @@ from django.test import Client
 from apps.core.tz import local_today
 from apps.ledger.auth import hash_token
 from apps.ledger.models import LedgerAccount, LedgerTransaction
+
+
+def _random_token() -> str:
+    """10 char alphanumeric, matches the new TOKEN_RE."""
+    alphabet = string.ascii_letters + string.digits
+    return "".join(secrets.choice(alphabet) for _ in range(10))
 
 
 def _post(client: Client, path: str, body: dict, token: str | None = None):
@@ -46,19 +54,68 @@ def _delete(client: Client, path: str, token: str):
 # ── Account lifecycle ────────────────────────────────────────────────────
 
 
-def test_create_account_returns_token_and_stores_hash():
+def test_create_account_with_user_chosen_token():
     client = Client()
-    response = client.post("/api/v1/ledger/accounts", data={}, content_type="application/json")
-    assert response.status_code == 201
+    raw = "MyToken123"
+    response = client.post(
+        "/api/v1/ledger/accounts",
+        data={"token": raw},
+        content_type="application/json",
+    )
+    assert response.status_code == 201, response.content
     payload = response.json()
-    assert "id" in payload and "token" in payload
-    raw = payload["token"]
-    # Token is opaque-but-non-trivial.
-    assert len(raw) >= 32
+    assert "id" in payload
+    # The raw token is never echoed back — the user supplied it themselves.
+    assert "token" not in payload
     # The server stores the hash, not the raw token.
     account = LedgerAccount.objects.get(id=payload["id"])
     assert account.token_hash == hash_token(raw)
     assert account.token_hash != raw
+
+
+def test_create_account_rejects_duplicate_token():
+    client = Client()
+    raw = "Duplicate1"
+    first = client.post(
+        "/api/v1/ledger/accounts", data={"token": raw}, content_type="application/json"
+    )
+    assert first.status_code == 201
+    second = client.post(
+        "/api/v1/ledger/accounts", data={"token": raw}, content_type="application/json"
+    )
+    assert second.status_code == 409
+    assert second.json().get("error") == "token_taken"
+
+
+@pytest.mark.parametrize(
+    "bad_token",
+    [
+        "short",          # < 10
+        "TooLongToken123", # > 10
+        "hello-1234",     # contains "-"
+        "with space",     # contains space
+        "ăăăăăăăăăă",     # non-ASCII (Vietnamese)
+        "",               # empty
+    ],
+)
+def test_create_account_rejects_invalid_token(bad_token):
+    client = Client()
+    response = client.post(
+        "/api/v1/ledger/accounts",
+        data={"token": bad_token},
+        content_type="application/json",
+    )
+    assert response.status_code == 400, (bad_token, response.content)
+
+
+def test_create_account_rejects_missing_token_field():
+    client = Client()
+    response = client.post(
+        "/api/v1/ledger/accounts",
+        data={},
+        content_type="application/json",
+    )
+    assert response.status_code == 400
 
 
 def test_me_requires_token():
@@ -68,10 +125,14 @@ def test_me_requires_token():
 
 def test_me_with_valid_token_returns_account():
     client = Client()
-    token = client.post(
-        "/api/v1/ledger/accounts", data={}, content_type="application/json"
-    ).json()["token"]
-    response = _get(client, "/api/v1/ledger/me", token=token)
+    raw = _random_token()
+    create = client.post(
+        "/api/v1/ledger/accounts",
+        data={"token": raw},
+        content_type="application/json",
+    )
+    assert create.status_code == 201
+    response = _get(client, "/api/v1/ledger/me", token=raw)
     assert response.status_code == 200
     assert "id" in response.json() and "created_at" in response.json()
 
@@ -96,9 +157,14 @@ def test_categories_is_public():
 @pytest.fixture
 def account_token():
     client = Client()
-    return client.post(
-        "/api/v1/ledger/accounts", data={}, content_type="application/json"
-    ).json()["token"]
+    raw = _random_token()
+    resp = client.post(
+        "/api/v1/ledger/accounts",
+        data={"token": raw},
+        content_type="application/json",
+    )
+    assert resp.status_code == 201, resp.content
+    return raw
 
 
 def test_create_transaction_then_list_today(account_token):
@@ -197,9 +263,13 @@ def test_transactions_isolated_between_accounts(account_token):
         token=account_token,
     )
     # Account B starts fresh.
-    other_token = client.post(
-        "/api/v1/ledger/accounts", data={}, content_type="application/json"
-    ).json()["token"]
+    other_token = _random_token()
+    create_b = client.post(
+        "/api/v1/ledger/accounts",
+        data={"token": other_token},
+        content_type="application/json",
+    )
+    assert create_b.status_code == 201
     listing = _get(client, "/api/v1/ledger/transactions", token=other_token)
     assert listing.status_code == 200
     assert listing.json() == []

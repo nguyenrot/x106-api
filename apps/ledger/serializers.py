@@ -1,8 +1,15 @@
 from __future__ import annotations
 
+import re
+
 from rest_framework import serializers
 
 from .models import LedgerAccount, LedgerTransaction
+
+# User-chosen tokens: ASCII alphanumeric, exactly 10 chars. Easier to remember
+# and type across devices than the previous 43-char server-minted opaque token.
+# Backwards compatible at the storage layer — we still SHA-256 it before saving.
+TOKEN_RE = re.compile(r"^[A-Za-z0-9]{10}$")
 
 
 class LedgerAccountSerializer(serializers.ModelSerializer):
@@ -10,6 +17,17 @@ class LedgerAccountSerializer(serializers.ModelSerializer):
         model = LedgerAccount
         fields = ["id", "created_at"]
         read_only_fields = fields
+
+
+class CreateAccountSerializer(serializers.Serializer):
+    token = serializers.CharField(trim_whitespace=False)
+
+    def validate_token(self, value: str) -> str:
+        if not TOKEN_RE.match(value or ""):
+            raise serializers.ValidationError(
+                "Token phải đúng 10 ký tự, chỉ gồm chữ cái (A-Z, a-z) và chữ số."
+            )
+        return value
 
 
 class LedgerTransactionSerializer(serializers.ModelSerializer):
