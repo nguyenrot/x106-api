@@ -35,6 +35,7 @@ INSTALLED_APPS = [
     "apps.studio",
     "apps.content",
     "apps.admin_art",
+    "apps.ledger",
 ]
 
 MIDDLEWARE = [
@@ -186,11 +187,13 @@ CORS_ALLOWED_ORIGINS = [
     "http://localhost:3002",
     "http://localhost:3003",
     "http://localhost:3004",
+    "http://localhost:3005",
     "https://kynguyen.cc",
     "https://me.kynguyen.cc",
     "https://journal.kynguyen.cc",
     "https://art.kynguyen.cc",
     "https://admin.kynguyen.cc",
+    "https://ledger.kynguyen.cc",
 ]
 CORS_ALLOW_CREDENTIALS = True
 CORS_ALLOW_HEADERS = ["content-type", "authorization"]
