@@ -142,13 +142,29 @@ def test_me_with_wrong_token_returns_401():
     assert _get(client, "/api/v1/ledger/me", token="not-a-real-token").status_code == 401
 
 
-def test_categories_is_public():
+def test_categories_requires_auth():
     client = Client()
-    response = client.get("/api/v1/ledger/categories")
+    assert client.get("/api/v1/ledger/categories").status_code == 401
+
+
+def test_categories_seeded_on_account_create():
+    """Brand-new accounts get the 9 default categories pre-seeded."""
+    client = Client()
+    raw = _random_token()
+    client.post(
+        "/api/v1/ledger/accounts",
+        data={"token": raw},
+        content_type="application/json",
+    )
+    response = _get(client, "/api/v1/ledger/categories", token=raw)
     assert response.status_code == 200
-    cats = response.json()
-    ids = {c["id"] for c in cats}
-    assert {"food", "salary", "other"}.issubset(ids)
+    payload = response.json()
+    income_slugs = {c["slug"] for c in payload["income"]}
+    expense_slugs = {c["slug"] for c in payload["expense"]}
+    assert {"salary", "bonus", "other"} == income_slugs
+    assert {"food", "transport", "shopping", "bills", "entertainment", "health", "other"} == expense_slugs
+    # Income and expense both ship with their own "other" — independent lists.
+    assert "other" in income_slugs and "other" in expense_slugs
 
 
 # ── Transactions ─────────────────────────────────────────────────────────
@@ -206,15 +222,127 @@ def test_amount_must_be_positive(account_token):
     assert response.status_code == 400
 
 
-def test_invalid_category_rejected(account_token):
+def test_empty_category_rejected(account_token):
+    """Categories are free-form per account (no global enum) — only emptiness
+    is rejected at the transaction serializer level."""
     client = Client()
     response = _post(
         client,
         "/api/v1/ledger/transactions",
-        {"kind": "expense", "amount": 10000, "category": "drugs"},
+        {"kind": "expense", "amount": 10000, "category": ""},
         token=account_token,
     )
     assert response.status_code == 400
+
+
+# ── Category CRUD ────────────────────────────────────────────────────────
+
+
+def test_create_category_returns_unique_slug(account_token):
+    client = Client()
+    r = _post(
+        client,
+        "/api/v1/ledger/categories",
+        {"kind": "expense", "name": "Du lịch", "color": "#fb923c"},
+        token=account_token,
+    )
+    assert r.status_code == 201, r.content
+    data = r.json()
+    assert data["slug"] == "du-lich"
+    assert data["name"] == "Du lịch"
+    assert data["color"] == "#fb923c"
+    assert data["kind"] == "expense"
+
+
+def test_create_category_slug_collision_appends_suffix(account_token):
+    """If the slug derived from the name collides with an existing one (e.g.
+    `food` from the default seed), append `-2` to keep it unique."""
+    client = Client()
+    r = _post(
+        client,
+        "/api/v1/ledger/categories",
+        {"kind": "expense", "name": "Food", "color": "#fbbf24"},
+        token=account_token,
+    )
+    assert r.status_code == 201
+    assert r.json()["slug"] == "food-2"
+
+
+def test_create_category_rejects_bad_color(account_token):
+    client = Client()
+    r = _post(
+        client,
+        "/api/v1/ledger/categories",
+        {"kind": "expense", "name": "Demo", "color": "tomato"},
+        token=account_token,
+    )
+    assert r.status_code == 400
+
+
+def test_create_category_separate_kinds(account_token):
+    """An income category and an expense category may share the same name —
+    they're independent lists."""
+    client = Client()
+    for kind in ("income", "expense"):
+        r = _post(
+            client,
+            "/api/v1/ledger/categories",
+            {"kind": kind, "name": "Đầu tư", "color": "#a78bfa"},
+            token=account_token,
+        )
+        assert r.status_code == 201
+
+
+def test_rename_category_keeps_slug(account_token):
+    client = Client()
+    # Find the seeded "food" category id.
+    cats = _get(client, "/api/v1/ledger/categories", token=account_token).json()
+    food = next(c for c in cats["expense"] if c["slug"] == "food")
+    r = _patch(
+        client,
+        f"/api/v1/ledger/categories/{food['id']}",
+        {"name": "Ăn vặt"},
+        token=account_token,
+    )
+    assert r.status_code == 200
+    updated = r.json()
+    assert updated["name"] == "Ăn vặt"
+    assert updated["slug"] == "food"  # slug doesn't move
+
+
+def test_delete_category_archives_not_destroys(account_token):
+    client = Client()
+    create = _post(
+        client,
+        "/api/v1/ledger/categories",
+        {"kind": "expense", "name": "Học phí", "color": "#22d3ee"},
+        token=account_token,
+    )
+    cat_id = create.json()["id"]
+    r = _delete(client, f"/api/v1/ledger/categories/{cat_id}", token=account_token)
+    assert r.status_code == 204
+    # Default list excludes archived entries.
+    cats = _get(client, "/api/v1/ledger/categories", token=account_token).json()
+    assert not any(c["id"] == cat_id for c in cats["expense"])
+
+
+def test_categories_isolated_between_accounts(account_token):
+    """Creating a category on account A doesn't appear on account B."""
+    client = Client()
+    _post(
+        client,
+        "/api/v1/ledger/categories",
+        {"kind": "expense", "name": "Pet supplies", "color": "#f59e0b"},
+        token=account_token,
+    )
+    other_raw = _random_token()
+    client.post(
+        "/api/v1/ledger/accounts",
+        data={"token": other_raw},
+        content_type="application/json",
+    )
+    cats = _get(client, "/api/v1/ledger/categories", token=other_raw).json()
+    assert not any(c["name"] == "Pet supplies" for c in cats["expense"])
 
 
 def test_kind_must_be_known(account_token):

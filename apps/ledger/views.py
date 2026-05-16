@@ -1,4 +1,4 @@
-"""Ledger endpoints — accounts, categories, transactions, summary."""
+"""Ledger endpoints — accounts, categories (CRUD), transactions, summary."""
 
 from __future__ import annotations
 
@@ -11,11 +11,17 @@ from rest_framework.views import APIView
 from apps.core.tz import local_today
 
 from .auth import LedgerTokenAuthentication, hash_token
-from .models import LedgerAccount, LedgerCategory, LedgerTransaction
+from .defaults import seed_default_categories
+from .models import LedgerAccount, LedgerCategoryRow, LedgerTransaction
 from .serializers import (
+    CategoryCreateSerializer,
+    CategoryReorderSerializer,
+    CategoryUpdateSerializer,
     CreateAccountSerializer,
     LedgerAccountSerializer,
+    LedgerCategorySerializer,
     LedgerTransactionSerializer,
+    _make_unique_slug,
 )
 from .services import compute_summary, totals_for
 
@@ -25,7 +31,8 @@ class LedgerAccountCreateView(APIView):
 
     Body: {"token": "10-char-alnum"}. The raw token is never echoed back; the
     server stores only its SHA-256 hash. 409 if the hash collides with an
-    existing account — pick a different token.
+    existing account — pick a different token. Default categories are seeded
+    on creation so the new account is immediately usable.
     """
 
     authentication_classes: list = []
@@ -43,6 +50,7 @@ class LedgerAccountCreateView(APIView):
                 status=status.HTTP_409_CONFLICT,
             )
         account = LedgerAccount.objects.create(token_hash=token_hash)
+        seed_default_categories(account)
         return Response(
             {"id": account.id, "created_at": account.created_at},
             status=status.HTTP_201_CREATED,
@@ -59,16 +67,115 @@ class LedgerMeView(APIView):
         return Response(LedgerAccountSerializer(request.user).data)
 
 
-class LedgerCategoriesView(APIView):
-    """GET /ledger/categories — public — predefined Vietnamese-labeled categories."""
+# ── Categories ────────────────────────────────────────────────────────────
 
-    authentication_classes: list = []
-    permission_classes = [AllowAny]
 
-    def get(self, _request):
-        return Response(
-            [{"id": value, "label": label} for value, label in LedgerCategory.choices]
+class LedgerCategoryViewSet(viewsets.ViewSet):
+    """User-editable categories. Income and expense lists are independent."""
+
+    authentication_classes = [LedgerTokenAuthentication]
+    permission_classes = [IsAuthenticated]
+    lookup_value_regex = r"[^/]+"
+
+    def _account_qs(self, request, include_archived: bool = False):
+        qs = LedgerCategoryRow.objects.filter(account=request.user)
+        if not include_archived:
+            qs = qs.filter(is_archived=False)
+        return qs
+
+    def list(self, request):
+        rows = list(self._account_qs(request).order_by("kind", "position", "created_at"))
+        income = [LedgerCategorySerializer(r).data for r in rows if r.kind == "income"]
+        expense = [LedgerCategorySerializer(r).data for r in rows if r.kind == "expense"]
+        return Response({"income": income, "expense": expense})
+
+    def create(self, request):
+        serializer = CategoryCreateSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        kind = serializer.validated_data["kind"]
+        name = serializer.validated_data["name"]
+        color = serializer.validated_data.get("color", "#94a3b8")
+        position = serializer.validated_data.get("position")
+        if position is None:
+            # Append to the end of the kind's list.
+            last = (
+                self._account_qs(request)
+                .filter(kind=kind)
+                .order_by("-position")
+                .first()
+            )
+            position = (last.position + 1) if last else 0
+
+        row = LedgerCategoryRow.objects.create(
+            account=request.user,
+            kind=kind,
+            slug=_make_unique_slug(request.user, kind, name),
+            name=name,
+            color=color,
+            position=position,
         )
+        return Response(LedgerCategorySerializer(row).data, status=status.HTTP_201_CREATED)
+
+    def partial_update(self, request, pk=None):
+        try:
+            row = self._account_qs(request, include_archived=True).get(id=pk)
+        except LedgerCategoryRow.DoesNotExist:
+            return Response({"error": "not_found"}, status=status.HTTP_404_NOT_FOUND)
+
+        serializer = CategoryUpdateSerializer(data=request.data, partial=True)
+        serializer.is_valid(raise_exception=True)
+        for field in ("name", "color", "position"):
+            if field in serializer.validated_data:
+                setattr(row, field, serializer.validated_data[field])
+        row.save()
+        return Response(LedgerCategorySerializer(row).data)
+
+    def destroy(self, request, pk=None):
+        """Soft-delete (archive). Transactions that referenced this category
+        still resolve to it for display purposes."""
+        try:
+            row = self._account_qs(request, include_archived=True).get(id=pk)
+        except LedgerCategoryRow.DoesNotExist:
+            return Response({"error": "not_found"}, status=status.HTTP_404_NOT_FOUND)
+        if row.is_archived:
+            return Response(status=status.HTTP_204_NO_CONTENT)
+        row.is_archived = True
+        row.save(update_fields=["is_archived", "updated_at"])
+        return Response(status=status.HTTP_204_NO_CONTENT)
+
+    @action(detail=True, methods=["post"], url_path="restore")
+    def restore(self, request, pk=None):
+        try:
+            row = self._account_qs(request, include_archived=True).get(id=pk)
+        except LedgerCategoryRow.DoesNotExist:
+            return Response({"error": "not_found"}, status=status.HTTP_404_NOT_FOUND)
+        row.is_archived = False
+        row.save(update_fields=["is_archived", "updated_at"])
+        return Response(LedgerCategorySerializer(row).data)
+
+    @action(detail=False, methods=["post"], url_path="reorder")
+    def reorder(self, request):
+        serializer = CategoryReorderSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        kind = serializer.validated_data["kind"]
+        order = serializer.validated_data["order"]
+
+        rows = {
+            r.id: r
+            for r in self._account_qs(request).filter(kind=kind, id__in=order)
+        }
+        updated = []
+        for index, row_id in enumerate(order):
+            row = rows.get(row_id)
+            if row is None:
+                continue
+            row.position = index
+            row.save(update_fields=["position", "updated_at"])
+            updated.append(LedgerCategorySerializer(row).data)
+        return Response({"items": updated})
+
+
+# ── Transactions ──────────────────────────────────────────────────────────
 
 
 class LedgerTransactionViewSet(viewsets.ModelViewSet):

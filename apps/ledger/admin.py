@@ -1,6 +1,14 @@
 from django.contrib import admin
 
-from .models import LedgerAccount, LedgerTransaction
+from .models import LedgerAccount, LedgerCategoryRow, LedgerTransaction
+
+
+@admin.register(LedgerCategoryRow)
+class LedgerCategoryAdmin(admin.ModelAdmin):
+    list_display = ("name", "kind", "slug", "color", "position", "account", "is_archived")
+    list_filter = ("kind", "is_archived")
+    search_fields = ("name", "slug", "account__id")
+    ordering = ("account", "kind", "position")
 
 
 @admin.register(LedgerAccount)
