@@ -34,6 +34,12 @@ class CreateAccountSerializer(serializers.Serializer):
 
 
 class LedgerTransactionSerializer(serializers.ModelSerializer):
+    # `perform_create` fills this in when the client omits it; without the
+    # explicit override the ModelSerializer would reject the payload before
+    # ever reaching the view. Pinned by regression test
+    # `test_update_and_delete_transaction`.
+    occurred_on = serializers.DateField(required=False)
+
     class Meta:
         model = LedgerTransaction
         fields = ["id", "kind", "amount", "category", "note", "occurred_on", "created_at"]
