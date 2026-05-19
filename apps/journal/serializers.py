@@ -48,3 +48,7 @@ class VibeStatsSerializer(serializers.Serializer):
     total_entries = serializers.IntegerField()
     streak = serializers.IntegerField()
     mood_counts = serializers.DictField(child=serializers.IntegerField())
+
+
+class ApplyFreezeSerializer(serializers.Serializer):
+    date = serializers.DateField(input_formats=["%Y-%m-%d"])

@@ -1,20 +1,35 @@
 from __future__ import annotations
 
+from datetime import date as date_cls
+
 from django.db.models import Q
-from rest_framework import mixins, viewsets
+from rest_framework import mixins, status, viewsets
 from rest_framework.decorators import action
+from rest_framework.exceptions import ValidationError
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 
 from apps.core.tz import local_today
 
-from .models import Vibe
+from .models import StreakFreeze, Vibe
 from .serializers import (
+    ApplyFreezeSerializer,
     UpsertVibeSerializer,
     VibeSerializer,
     VibeStatsSerializer,
 )
 from .services import compute_stats
+
+
+FREEZES_PER_MONTH = 1
+
+
+def _used_in_month(user_id: str, ref: date_cls) -> int:
+    return StreakFreeze.objects.filter(
+        user_id=user_id,
+        applied_date__year=ref.year,
+        applied_date__month=ref.month,
+    ).count()
 
 
 class VibeViewSet(
@@ -35,7 +50,7 @@ class VibeViewSet(
 
     permission_classes = [IsAuthenticated]
     serializer_class = VibeSerializer
-    pagination_class = None  # the frontend reads the full list
+    pagination_class = None
     lookup_field = "id"
 
     def get_queryset(self):
@@ -78,6 +93,9 @@ class VibeViewSet(
                 "tags": serializer.validated_data.get("tags") or [],
             },
         )
+        # If the user backfills an entry on a previously-frozen day, the freeze
+        # is no longer needed — release it so the freeze count rolls back up.
+        StreakFreeze.objects.filter(user=request.user, applied_date=date).delete()
         return Response({"message": "vibe saved"})
 
     @action(detail=False, methods=["get"], url_path="today")
@@ -98,3 +116,51 @@ class VibeViewSet(
             .order_by("-date")
         )
         return Response(VibeSerializer(vibes, many=True).data)
+
+
+class FreezeViewSet(viewsets.ViewSet):
+    """journal.kynguyen.cc — streak freezes.
+
+    GET  /journal/freezes        -> {available_this_month, total_used, used_dates}
+    POST /journal/freezes/apply  -> {date} apply a freeze to a past missed day.
+    """
+
+    permission_classes = [IsAuthenticated]
+
+    def list(self, request):
+        today = local_today()
+        used_this_month = _used_in_month(request.user.id, today)
+        used_dates = list(
+            StreakFreeze.objects
+            .filter(user=request.user)
+            .order_by("-applied_date")
+            .values_list("applied_date", flat=True)
+        )
+        return Response({
+            "available_this_month": max(FREEZES_PER_MONTH - used_this_month, 0),
+            "freezes_per_month": FREEZES_PER_MONTH,
+            "total_used": len(used_dates),
+            "used_dates": [d.isoformat() for d in used_dates],
+        })
+
+    @action(detail=False, methods=["post"], url_path="apply")
+    def apply(self, request):
+        serializer = ApplyFreezeSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        applied = serializer.validated_data["date"]
+        today = local_today()
+
+        if applied >= today:
+            raise ValidationError({"date": "Freezes can only be applied to past days."})
+
+        if Vibe.objects.filter(user=request.user, date=applied).exists():
+            raise ValidationError({"date": "That day already has an entry — no freeze needed."})
+
+        if StreakFreeze.objects.filter(user=request.user, applied_date=applied).exists():
+            raise ValidationError({"date": "That day is already frozen."})
+
+        if _used_in_month(request.user.id, today) >= FREEZES_PER_MONTH:
+            raise ValidationError({"date": "No freezes left this month."})
+
+        StreakFreeze.objects.create(user=request.user, applied_date=applied)
+        return Response({"message": "freeze applied", "date": applied.isoformat()}, status=status.HTTP_201_CREATED)

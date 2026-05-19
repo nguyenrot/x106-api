@@ -1,4 +1,6 @@
-"""Vibe model — one journal entry per (user, date)."""
+"""Vibe + StreakFreeze models — one journal entry per (user, date), plus
+optional "freeze" rows that let a missed day still count toward the streak.
+"""
 
 from __future__ import annotations
 
@@ -30,3 +32,26 @@ class Vibe(models.Model):
             models.UniqueConstraint(fields=["user", "date"], name="uq_vibes_user_date"),
         ]
         ordering = ["-date"]
+
+
+class StreakFreeze(models.Model):
+    """One row per (user, applied_date). Marks a day as "frozen" — the streak
+    walker treats it the same as a day with a vibe."""
+
+    id = models.CharField(primary_key=True, max_length=36, default=new_id, editable=False)
+    user = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.DO_NOTHING,
+        db_column="user_id",
+        db_constraint=False,
+        related_name="streak_freezes",
+    )
+    applied_date = models.DateField()
+    used_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        db_table = "streak_freezes"
+        constraints = [
+            models.UniqueConstraint(fields=["user", "applied_date"], name="uq_freeze_user_date"),
+        ]
+        ordering = ["-applied_date"]
