@@ -21,6 +21,7 @@ class Vibe(models.Model):
     mood_emoji = models.CharField(max_length=10)
     title = models.CharField(max_length=255)
     note = models.TextField(null=True, blank=True)
+    tags = models.JSONField(default=list, blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
 
     class Meta:
