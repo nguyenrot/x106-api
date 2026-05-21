@@ -25,6 +25,34 @@ def test_public_content_endpoint_routing():
     assert response.status_code == 404
 
 
+def test_now_weather_endpoint_routing(monkeypatch):
+    """The endpoint should always return 200 — `get_weather()` swallows
+    network errors and falls back to a placeholder payload. Tests must not
+    hit the real Open-Meteo API."""
+    from apps.core.services import weather as weather_mod
+    monkeypatch.setattr(
+        weather_mod,
+        "_fetch_remote",
+        lambda: {
+            "temp_c": 27,
+            "code": 1,
+            "description": {"en": "mostly clear", "vi": "trời gần quang"},
+            "place": "Mỹ Khê",
+        },
+    )
+    # reset cache so the mocked _fetch_remote actually runs
+    weather_mod._cache.clear()
+    weather_mod._cache.update({"ts": 0.0, "data": None})
+
+    client = Client()
+    response = client.get("/api/v1/now/weather")
+    assert response.status_code == 200
+    body = response.json()
+    assert body["temp_c"] == 27
+    assert body["description"] == {"en": "mostly clear", "vi": "trời gần quang"}
+    assert body["place"] == "Mỹ Khê"
+
+
 def test_admin_login_endpoint_exists():
     client = Client()
     response = client.post(
