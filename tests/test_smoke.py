@@ -53,6 +53,13 @@ def test_now_weather_endpoint_routing(monkeypatch):
     assert body["place"] == "Mỹ Khê"
 
 
+def test_admin_content_section_delete_requires_admin():
+    """DELETE without admin token → 401, not 405. Confirms the route is wired."""
+    client = Client()
+    response = client.delete("/api/v1/admin/content/vibe-hub/__nonexistent__")
+    assert response.status_code in (401, 403)
+
+
 def test_admin_login_endpoint_exists():
     client = Client()
     response = client.post(

@@ -35,16 +35,22 @@ class AdminContentListView(APIView):
 
 
 class AdminContentSectionView(APIView):
-    """PUT /api/v1/admin/content/{app}/{section}"""
+    """PUT/DELETE /api/v1/admin/content/{app}/{section}"""
 
     permission_classes = [IsAdminToken]
 
     def put(self, request, app: str, section: str):
         serializer = UpsertSectionSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
-        SiteContent.objects.update_or_create(
+        _row, created = SiteContent.objects.update_or_create(
             app=app,
             section=section,
             defaults={"data": serializer.validated_data["data"]},
         )
-        return Response({"message": "updated"})
+        return Response({"message": "created" if created else "updated"})
+
+    def delete(self, _request, app: str, section: str):
+        deleted, _ = SiteContent.objects.filter(app=app, section=section).delete()
+        if deleted == 0:
+            return Response({"error": "not found"}, status=status.HTTP_404_NOT_FOUND)
+        return Response({"message": "deleted"})
