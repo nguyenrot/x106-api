@@ -130,6 +130,13 @@ class AdminLogoutView(APIView):
         return response
 
 
+class AdminVerifyView(APIView):
+    permission_classes = [IsAdminToken]
+
+    def get(self, _request):
+        return Response({"ok": True})
+
+
 class UsersMeView(APIView):
     permission_classes = [IsAuthenticated]
 
