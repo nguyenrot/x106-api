@@ -2,7 +2,7 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
-This is the **Python (Django + DRF + Celery)** API backend for the X106 ecosystem. Port 4000, served at `api.kynguyen.cc`. The repo lives at `/var/www/api` on the VPS and runs as the systemd unit `x106-api.service`. Two siblings — `x106-celery-worker.service` (AI ops chat + SSH exec) and `x106-celery-beat.service` (recovery + cleanup schedule) — replace the old Go `x106-worker`. The parent ecosystem doc is at `../CLAUDE.md` — read it first for context on the surrounding apps and shared design system.
+This is the **Python (Django + DRF + Celery)** API backend for the X106 ecosystem. Port 4000, served at `api.kynguyen.cc`. The repo lives at `/var/www/api` on the VPS and runs as the systemd unit `x106-api.service`. Three siblings — `x106-celery-worker.service` (AI ops chat + SSH exec), `x106-celery-beat.service` (recovery + cleanup schedule), and `x106-terminal-ws.service` (WebSocket-to-PTY bridge on `127.0.0.1:7682` for the admin Terminal tab; setup in `infra/terminal-ws-setup.md`) — replace the old Go `x106-worker` + ttyd combo. The parent ecosystem doc is at `../CLAUDE.md` — read it first for context on the surrounding apps and shared design system.
 
 The Go service was rewritten to Python on 2026-05-09. Old Go source lives in git history under tags `pre-python-rewrite` and earlier — use `git log --oneline -- cmd/ internal/` if you need archaeology.
 
@@ -79,7 +79,8 @@ apps/
   ledger/       # personal finance (transactions, categories, budgets)
   content/      # SiteContent (public + admin upsert)
   console/      # VPS console + AI ops assistant (OpenCode Zen + paramiko SSH); see infra/console-setup.md
-infra/systemd/  # production unit files (x106-api, x106-celery-worker, x106-celery-beat)
+terminal_ws/    # Standalone async daemon — WebSocket bridge to a local PTY. Runs as systemd `x106-terminal-ws` (User=x106-ops, :7682). Auth via x106_admin JWT cookie. Powers the admin app's Terminal tab via xterm.js. Setup in infra/terminal-ws-setup.md.
+infra/systemd/  # production unit files (x106-api, x106-celery-worker, x106-celery-beat, x106-terminal-ws)
 infra/console-setup.md  # one-time x106-ops user + ssh key + sudoers setup on VPS
 .github/workflows/deploy.yml
 deploy.sh

@@ -11,9 +11,13 @@ cp /var/www/api/infra/systemd/*.service /etc/systemd/system/
 systemctl disable --now x106-worker.service 2>/dev/null || true
 
 systemctl daemon-reload
-systemctl enable --now x106-api x106-celery-worker x106-celery-beat
-systemctl status x106-api x106-celery-worker x106-celery-beat
+systemctl enable --now x106-api x106-celery-worker x106-celery-beat x106-terminal-ws
+systemctl status x106-api x106-celery-worker x106-celery-beat x106-terminal-ws
 ```
+
+`x106-terminal-ws.service` runs the WebSocket bridge that powers the admin
+app's Terminal tab (replaces ttyd). Setup details in
+[`../terminal-ws-setup.md`](../terminal-ws-setup.md).
 
 Subsequent deploys (via GitHub Actions) `systemctl restart` these — no need
 to touch the unit files again unless you're changing flags.

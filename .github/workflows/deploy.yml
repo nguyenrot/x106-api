@@ -73,7 +73,7 @@ jobs:
         run: |
           tar czf api-deploy.tar.gz \
             pyproject.toml uv.lock manage.py deploy.sh \
-            x106 apps staticfiles
+            x106 apps terminal_ws staticfiles infra
           ls -lh api-deploy.tar.gz
 
       - name: SCP to VPS
@@ -97,6 +97,7 @@ jobs:
             API_SERVICE=x106-api
             CELERY_SERVICE=x106-celery-worker
             BEAT_SERVICE=x106-celery-beat
+            TERM_SERVICE=x106-terminal-ws
 
             mkdir -p "$APP_DIR"
             cd "$APP_DIR"
@@ -104,7 +105,7 @@ jobs:
             # Snapshot the previous source tree once per deploy.
             rm -rf .prev
             mkdir -p .prev
-            for d in x106 apps staticfiles; do
+            for d in x106 apps terminal_ws staticfiles infra; do
               [ -e "$d" ] && mv "$d" ".prev/$d" || true
             done
             for f in pyproject.toml uv.lock manage.py deploy.sh; do
@@ -118,12 +119,28 @@ jobs:
             uv sync --frozen
             uv run python manage.py migrate --noinput
 
+            # Sync systemd unit files (only daemon-reload if anything changed).
+            UNITS_CHANGED=0
+            for unit_src in infra/systemd/*.service; do
+              [ -f "$unit_src" ] || continue
+              unit_name=$(basename "$unit_src")
+              unit_dst="/etc/systemd/system/${unit_name}"
+              if ! cmp -s "$unit_src" "$unit_dst" 2>/dev/null; then
+                cp -f "$unit_src" "$unit_dst"
+                UNITS_CHANGED=1
+                echo "[api] installed/updated $unit_name"
+              fi
+            done
+            if [ "$UNITS_CHANGED" = "1" ]; then
+              systemctl daemon-reload
+            fi
+
             systemctl restart "$API_SERVICE"
             sleep 2
             systemctl is-active --quiet "$API_SERVICE"
             curl -fsSL https://api.kynguyen.cc/api/v1/health -o /dev/null -w 'health HTTP %{http_code}\n'
 
-            for svc in "$CELERY_SERVICE" "$BEAT_SERVICE"; do
+            for svc in "$CELERY_SERVICE" "$BEAT_SERVICE" "$TERM_SERVICE"; do
               if [ -f "/etc/systemd/system/${svc}.service" ]; then
                 systemctl restart "$svc"
                 sleep 1

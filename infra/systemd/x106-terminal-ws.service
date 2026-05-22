@@ -1,0 +1,23 @@
+[Unit]
+Description=X106 terminal WebSocket bridge (xterm.js → PTY)
+After=network.target
+
+[Service]
+Type=simple
+User=x106-ops
+Group=x106-ops
+WorkingDirectory=/var/www/api
+EnvironmentFile=/var/www/api/.env
+Environment=PYTHONUNBUFFERED=1
+Environment=TERMINAL_WS_HOST=127.0.0.1
+Environment=TERMINAL_WS_PORT=7682
+Environment=HOME=/home/x106-ops
+Environment=USER=x106-ops
+ExecStart=/var/www/api/.venv/bin/python -m terminal_ws
+Restart=always
+RestartSec=3
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

@@ -1333,7 +1333,9 @@ dependencies = [
     { name = "httpx" },
     { name = "mysqlclient" },
     { name = "paramiko" },
+    { name = "pyjwt" },
     { name = "redis" },
+    { name = "websockets" },
     { name = "whitenoise" },
 ]
 
@@ -1360,7 +1362,9 @@ requires-dist = [
     { name = "httpx", specifier = ">=0.28" },
     { name = "mysqlclient", specifier = ">=2.2" },
     { name = "paramiko", specifier = ">=3.5" },
+    { name = "pyjwt", specifier = ">=2.9" },
     { name = "redis", specifier = ">=5.2" },
+    { name = "websockets", specifier = ">=13" },
     { name = "whitenoise", specifier = ">=6.8" },
 ]
 
