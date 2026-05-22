@@ -2,7 +2,7 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
-This is the **Python (Django + DRF + Celery)** API backend for the X106 ecosystem. Port 4000, served at `api.kynguyen.cc`. The repo lives at `/var/www/api` on the VPS and runs as the systemd unit `x106-api.service`. Two siblings — `x106-celery-worker.service` (DeepSeek async LLM jobs) and `x106-celery-beat.service` (recovery + cleanup schedule) — replace the old Go `x106-worker`. The parent ecosystem doc is at `../CLAUDE.md` — read it first for context on the surrounding apps and shared design system.
+This is the **Python (Django + DRF + Celery)** API backend for the X106 ecosystem. Port 4000, served at `api.kynguyen.cc`. The repo lives at `/var/www/api` on the VPS and runs as the systemd unit `x106-api.service`. Two siblings — `x106-celery-worker.service` (AI ops chat + SSH exec) and `x106-celery-beat.service` (recovery + cleanup schedule) — replace the old Go `x106-worker`. The parent ecosystem doc is at `../CLAUDE.md` — read it first for context on the surrounding apps and shared design system.
 
 The Go service was rewritten to Python on 2026-05-09. Old Go source lives in git history under tags `pre-python-rewrite` and earlier — use `git log --oneline -- cmd/ internal/` if you need archaeology.
 
@@ -14,8 +14,8 @@ uv run python manage.py runserver 4000           # dev server
 uv run python manage.py migrate                  # apply migrations
 uv run python manage.py createsuperuser          # admin user (replaces ADMIN_USERNAME / ADMIN_PASSWORD_HASH env)
 uv run python manage.py shell                    # ORM shell
-uv run celery -A x106 worker -l info             # local LLM worker (needs Redis on :6379)
-uv run celery -A x106 beat -l info               # local scheduler (60s recovery, 30min cleanup)
+uv run celery -A x106 worker -l info             # local Celery worker (needs Redis on :6379)
+uv run celery -A x106 beat -l info               # local scheduler (60s recovery, 1h cleanup)
 uv run pytest                                    # tests
 ```
 
@@ -50,7 +50,7 @@ systemctl enable --now x106-api x106-celery-worker x106-celery-beat
 systemctl disable --now x106-worker.service 2>/dev/null || true
 ```
 
-`/etc/x106-api.env` contains the runtime env (DJANGO_SECRET_KEY, DB_*, JWT_SECRET, COOKIE_DOMAIN=.kynguyen.cc, REDIS_URL=redis://127.0.0.1:6379/0, DEEPSEEK_API_KEY, etc.). See `infra/systemd/README.md` for the full template.
+`/var/www/api/.env` contains the runtime env (DJANGO_SECRET_KEY, DB_*, JWT_SECRET, COOKIE_DOMAIN=.kynguyen.cc, REDIS_URL=redis://127.0.0.1:6379/0, OPENCODE_ZEN_API_KEY, OPENCODE_ZEN_BASE_URL, CONSOLE_SSH_HOST/PORT/USER/KEY_PATH, etc.). See `infra/console-setup.md` for the console-specific bits.
 
 ### Migrations on the VPS
 
@@ -73,13 +73,14 @@ x106/
   wsgi.py                              # gunicorn entry
   celery.py                            # Celery app
 apps/
-  core/         # health endpoint, tz helpers (Asia/Ho_Chi_Minh), id generator, IsAdminToken
+  core/         # health endpoint, tz helpers (Asia/Ho_Chi_Minh), id generator, IsAdminToken, legacy-table-drop migration
   accounts/    # User on `users` table, JWTCookieAuthentication, login/logout/register/admin views
   journal/      # Vibe + VibeViewSet (today, stats, upsert)
-  studio/       # Artwork + LLM (model, quota, scene validator, DeepSeek client, Celery task, maintenance)
+  ledger/       # personal finance (transactions, categories, budgets)
   content/      # SiteContent (public + admin upsert)
-  admin_art/    # Admin endpoints for AI art mgmt (users quota, llm-prompt, settings, stats, logs, jobs)
+  console/      # VPS console + AI ops assistant (OpenCode Zen + paramiko SSH); see infra/console-setup.md
 infra/systemd/  # production unit files (x106-api, x106-celery-worker, x106-celery-beat)
+infra/console-setup.md  # one-time x106-ops user + ssh key + sudoers setup on VPS
 .github/workflows/deploy.yml
 deploy.sh
 ```
@@ -88,7 +89,9 @@ To add a feature: pick the right app, drop a model into `models.py`, a serialize
 
 ### Database — Meta.db_table pinning
 
-We **do not** let Django generate `<app>_<model>` table names. Every model's `Meta.db_table` is pinned to the exact MySQL table name from the legacy Go schema (`users`, `vibes`, `artworks`, `llm_usage`, `llm_jobs`, `llm_request_logs`, `site_content`, `app_settings`). Foreign keys to `User` use `db_constraint=False` because the legacy schema dropped FKs (charset/collation mismatch — see git history for the original comment in `internal/database/schema.go`).
+We **do not** let Django generate `<app>_<model>` table names. Every model's `Meta.db_table` is pinned to the exact MySQL table name. Legacy ones came from the Go schema (`users`, `vibes`, `site_content`); new ones (`console_*`, `ledger_*`) are plain snake_case Django-owned. Foreign keys to `User` use `db_constraint=False` because the legacy schema dropped FKs (charset/collation mismatch — see git history for the original comment in `internal/database/schema.go`).
+
+The old AI-art stack (`artworks`, `llm_jobs`, `llm_usage`, `llm_request_logs`, `llm_conversations*`, `llm_models`, `llm_prompt_versions`, `app_settings`, `app_setting_changes`) was torn down on 2026-05-22 by `apps/core/migrations/0001_drop_legacy_ai.py`. The AI capability now lives entirely in `apps.console` against OpenCode Zen free-tier models.
 
 **First deploy used `migrate --fake-initial`** — Django wrote `django_migrations` rows for every initial migration without re-creating the existing tables. From that point forward, schema changes flow through normal Django migrations. The legacy `internal/database/schema.go:EnsureSchema()` additive-ALTER pattern is **retired**; never reimplement it. The legacy `migrations/*.sql` files are gone — historical reference is in git.
 
@@ -102,45 +105,47 @@ Two cookies / two scopes:
 
 | cookie       | claim required        | lifetime | used by                                      |
 |--------------|-----------------------|----------|----------------------------------------------|
-| x106_session | `user_id` (simplejwt) | 30 days  | /users/me, /journal/*, /artworks/*, /studio/* |
-| x106_admin   | `role == "admin"`     | 8 hours  | /admin/content/*, /admin/art/*               |
+| x106_session | `user_id` (simplejwt) | 30 days  | /users/me, /journal/*, /ledger/*             |
+| x106_admin   | `role == "admin"`     | 8 hours  | /admin/content/*, /admin/console/*           |
 
 Both signed with `JWT_SECRET` (HS256). Cookie reading lives in `apps.accounts.auth.JWTCookieAuthentication`; admin permission in `apps.core.permissions.IsAdminToken` (also accepts a Django staff session, so the `/admin/` UI gives you the same scope without a separate JWT).
 
 **Admin authentication is via Django superuser** — `python manage.py createsuperuser` once, then log in with that username/password against `POST /api/v1/admin/login`. The legacy `ADMIN_USERNAME` / `ADMIN_PASSWORD_HASH` env vars are gone.
 
-### LLM async pipeline (Celery)
+### VPS console + AI ops assistant (`apps.console`)
 
-Submit flow (`POST /api/v1/studio/llm/job`):
-1. Reserve quota (`apps.studio.quota.reserve` — atomic INSERT…ON DUPLICATE KEY UPDATE on `llm_usage`).
-2. Insert pending row into `llm_jobs`.
-3. Enqueue `apps.studio.tasks.run_llm_job(job_id)` to Redis.
-4. Return 202 + `{jobId, used, remaining, limit}`.
+The AI surface in the ecosystem. AI calls run through **OpenCode Zen** (free-tier OpenAI-compatible gateway at `https://opencode.ai/zen/v1`), default model `deepseek-v4-flash-free`; shell commands run via **paramiko SSH** to a dedicated `x106-ops` user on the same VPS — never subprocess on the api service itself.
 
-The Celery worker picks up the task, marks the row processing, calls DeepSeek via `apps.studio.services.deepseek.call_deepseek` (httpx streaming, 60s idle watchdog, retry once with stricter prompt + lower temperature), validates the scene with `apps.studio.services.scene.validate_and_clamp_scene`, writes `result_scene` and flips status to done. On failure: refunds quota + writes `error_message`. Hard caps: `time_limit=620`, `soft_time_limit=600` (Cloudflare-bypassing — the worker isn't behind the 100s edge ceiling).
+Four tables (`console_settings`, `console_sessions`, `console_messages`, `console_execs`); the last doubles as audit trail. Lifecycle:
 
-`apps.studio.maintenance` runs two beat jobs:
-- **recover_stale_jobs** every 60s — finds rows stuck in `processing` longer than 720s, marks them failed + refunds quota.
-- **cleanup_old_jobs** every 30 min — deletes terminal rows older than 24h.
+```
+chat message (user) → run_console_chat → LLM tool_call → ConsoleExec (awaiting_confirm)
+                                                                ↓ user Approves
+                                                          run_console_exec → SSH → done
+                                                                ↓
+                                                       run_console_chat (loop)
+                                                                ↓
+                                                  final assistant text → done
+```
 
-### Artwork validation
+Hard caps: `console.max_agent_steps` (default 8) to stop runaway loops; `console.command_timeout_sec` (default 30) on each SSH call; per-task `time_limit=120/soft=90`. Beat tasks: `recover_stuck_execs` (60s), `cleanup_old_execs` (1h, drops >30-day terminal rows).
 
-Ported byte-for-byte from `internal/handler/artwork.go` into `apps/studio/serializers.py`:
+Safety: `apps.console.services.danger.classify` returns `safe`/`write`/`destructive` from a regex+keyword classifier; every AI command must be Approved regardless of level (policy); `destructive` additionally requires typing the `console.destroy_phrase` (default `DESTROY`). The Nemotron-3-super-free model is hardcoded off the allowlist because NVIDIA logs prompts.
 
-- `title ≤ 80`, `prompt ≤ 180`, `style ≤ 40`, `palette ≤ 60`, `kind ≤ 24`, `source_id ≤ 80` (rune-aware via Python `len()` on `str`).
-- `settings ≤ 4 KB`, `scene ≤ 16 KB` — must be JSON **objects** (`dict`).
-- `thumbnail_data_url ≤ 520 KB`, `asset_data_url ≤ 900 KB`, must start with `data:image/webp;base64,` or `data:image/jpeg;base64,`.
-- `kind ∈ {favorite, upload, snapshot}`.
+**Reasoning models gotcha:** DeepSeek-V4-Flash returns `reasoning_content` on the assistant message during tool-use turns. It must be persisted and replayed on the next chat completion or the provider returns HTTP 400. `ConsoleMessage.reasoning_content` holds it; `_build_history` re-emits it on assistant entries with `tool_calls`.
 
-DRF rejects unknown fields by default at the serializer level when used with explicit `fields = [...]` — no DisallowUnknownFields equivalent needed.
+One-time prod setup (x106-ops user, sshd keys, sudoers whitelist, env vars) lives in `infra/console-setup.md`. Missing env vars → endpoints return 503 with a clear message, no crash.
 
 ### Routes (mounted under `/api/v1`)
 
 Public: `GET /health`, `POST /auth/{register,login,logout}`, `GET /content/{app}/{section}`, `POST /admin/{login,logout}`.
 
-User-auth (cookie x106_session OR Bearer): `GET /users/me`, `GET|POST /journal/vibes`, `GET /journal/vibes/today`, `GET /journal/vibes/stats`, `GET|POST /artworks`, `GET|DELETE /artworks/{id}`, `GET /studio/llm/quota`, `POST /studio/llm/job`, `GET /studio/llm/job/{id}`, `POST /studio/llm/job/{id}/cancel`.
+User-auth (cookie x106_session OR Bearer): `GET /users/me`, `GET|POST /journal/vibes`, `GET /journal/vibes/today`, `GET /journal/vibes/stats`, plus `/ledger/*`.
 
-Admin-auth (cookie x106_admin OR Bearer with `role:admin`): `GET /admin/content/{app}`, `PUT /admin/content/{app}/{section}`, plus the full `admin/art/*` family (users quota, llm-prompt, settings, stats, logs, jobs).
+Admin-auth (cookie x106_admin OR Bearer with `role:admin`):
+- `GET /admin/content/{app}`, `PUT /admin/content/{app}/{section}`
+- `GET /admin/users`, `POST /admin/users/{id}/{activate|deactivate}`, `DELETE /admin/users/{id}`
+- VPS console: `GET|POST|DELETE /admin/console/sessions[/{id}]`, `POST /admin/console/sessions/{id}/messages`, `GET /admin/console/messages/{id}`, `GET /admin/console/execs/{id}`, `POST /admin/console/execs/{id}/{approve,deny,cancel,explain}`, `GET /admin/console/logs`, `GET|PUT /admin/console/settings`
 
 OpenAPI schema: `/api/schema/`. Swagger UI: `/api/docs/`.
 
@@ -148,9 +153,8 @@ OpenAPI schema: `/api/schema/`. Swagger UI: `/api/docs/`.
 
 Allowed origins live in `x106/settings/base.py:CORS_ALLOWED_ORIGINS` (the five prod subdomains + localhost:3000–3004). Dev mode (`x106.settings.dev`) sets `CORS_ALLOW_ALL_ORIGINS = True`. `CORS_ALLOW_CREDENTIALS = True` is always on — frontend `fetch` must use `credentials: 'include'`.
 
-### Greenfield API differences from the Go service
+### Notes
 
-- **No sync `/studio/llm/{random,polish,remix}`.** The frontend submits a job and polls — only one path (the `/job` family) handles LLM calls.
-- **All admin routes live under DRF ViewSets** with `@action`s; no hand-rolled chi route table.
-- **Django `/admin/` UI is enabled** (`/admin/`) — staff users get a free dashboard for editing site_content, viewing artworks, reading LLM logs.
+- **All admin routes live under DRF ViewSets** with `@action`s; no hand-rolled route table.
+- **Django `/admin/` UI is enabled** (`/admin/`) — staff users get a free dashboard for editing site_content, console settings, etc.
 - **Pagination on admin list endpoints** is via `LimitOffsetPagination` (default 50, max 200) — query params `?limit=&offset=` are unchanged.
