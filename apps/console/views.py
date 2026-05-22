@@ -82,6 +82,9 @@ class SessionViewSet(
     permission_classes = [IsAdminToken]
     serializer_class = SessionSerializer
     lookup_field = "id"
+    # Sessions list is small (single admin) and the frontend types it as a
+    # flat array — opt out of the project's default LimitOffsetPagination.
+    pagination_class = None
 
     def get_queryset(self):
         return ConsoleSession.objects.filter(user=self.request.user).order_by("-updated_at")
