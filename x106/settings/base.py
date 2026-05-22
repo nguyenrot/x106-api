@@ -32,9 +32,7 @@ INSTALLED_APPS = [
     "apps.core",
     "apps.accounts",
     "apps.journal",
-    "apps.studio",
     "apps.content",
-    "apps.admin_art",
     "apps.ledger",
 ]
 
@@ -124,22 +122,6 @@ X106_ADMIN_COOKIE = "x106_admin"
 X106_SESSION_COOKIE_MAX_AGE = int(timedelta(days=30).total_seconds())
 X106_ADMIN_COOKIE_MAX_AGE = int(timedelta(hours=8).total_seconds())
 
-# DeepSeek
-DEEPSEEK_API_KEY = env.str("DEEPSEEK_API_KEY", default="")
-DEEPSEEK_BASE_URL = env.str("DEEPSEEK_BASE_URL", default="https://api.deepseek.com")
-DEEPSEEK_MODEL = env.str("DEEPSEEK_MODEL", default="deepseek-v4-pro")
-DEEPSEEK_FLASH_MODEL = env.str("DEEPSEEK_FLASH_MODEL", default="deepseek-v4-flash")
-# OpenCode Go — same key works for both the OpenAI- and Anthropic-compatible
-# endpoints; the bare /v1 root is the OpenAI-compat path, /v1/messages is
-# Anthropic-compat (see services/providers.py).
-OPENCODE_API_KEY = env.str("OPENCODE_API_KEY", default="")
-OPENCODE_BASE_URL = env.str("OPENCODE_BASE_URL", default="https://opencode.ai/zen/go/v1")
-OPENCODE_ANTHROPIC_BASE_URL = env.str(
-    "OPENCODE_ANTHROPIC_BASE_URL",
-    default="https://opencode.ai/zen/go/v1",
-)
-LLM_DAILY_LIMIT = env.int("LLM_DAILY_LIMIT", default=5)
-
 # ─── DRF & SimpleJWT ──────────────────────────────────────────────────────
 
 REST_FRAMEWORK = {
@@ -209,16 +191,7 @@ CELERY_WORKER_PREFETCH_MULTIPLIER = 1
 CELERY_TASK_ACKS_LATE = True
 CELERY_TASK_TRACK_STARTED = True
 CELERY_TIMEZONE = TIME_ZONE
-CELERY_BEAT_SCHEDULE = {
-    "recover-stale-llm-jobs": {
-        "task": "apps.studio.maintenance.recover_stale_jobs",
-        "schedule": 60.0,
-    },
-    "cleanup-old-llm-jobs": {
-        "task": "apps.studio.maintenance.cleanup_old_jobs",
-        "schedule": 1800.0,
-    },
-}
+CELERY_BEAT_SCHEDULE = {}
 
 # ─── Logging ──────────────────────────────────────────────────────────────
 
