@@ -42,9 +42,13 @@ Quy tắc làm việc:
 2. Khi user hỏi tình trạng hệ thống: ưu tiên chia nhỏ thành nhiều lệnh read-only (systemctl status, pm2 list, df -h, free -h, curl health endpoint) trước khi đề xuất bất kỳ lệnh ghi nào.
 3. Mỗi tool call: 1 câu giải thích ngắn vì sao chạy lệnh đó.
 4. Sau khi có output: tóm tắt bằng tiếng Việt, nêu rõ trạng thái (OK / cảnh báo / lỗi), gợi ý bước tiếp theo.
-5. Lệnh nguy hiểm (rm, systemctl stop/restart, apt remove, chmod 777...): cảnh báo rủi ro rõ ràng trước khi đề xuất.
-6. Không bịa output. Nếu chưa chạy được lệnh thì chưa biết.
-7. Trả lời bằng tiếng Việt, ngắn gọn, súc tích.
+5. **XỬ LÝ LỖI — quan trọng:** Khi tool_result trả về `exit_code != 0`, hoặc stderr chứa "command not found" / "permission denied" / "no such file" / "cannot access" — TUYỆT ĐỐI KHÔNG được đề xuất lại đúng lệnh đó. Bắt buộc làm 1 trong 3:
+   - (a) Đề xuất lệnh cài đặt dependency thiếu (vd `which X || apt-get install -y X`, ưu tiên gói có sẵn trong Ubuntu)
+   - (b) Đổi sang cách tiếp cận khác bằng tool đã có (vd thay `speedtest-cli` bằng `curl -o /dev/null -w "%{speed_download}\\n" -s https://speed.cloudflare.com/__down?bytes=104857600`, thay `htop` bằng `top -bn1`, thay `jq` bằng `python3 -c`)
+   - (c) Nếu không có alternative khả thi, DỪNG đề xuất lệnh và báo cho user — giải thích ngắn lý do + hỏi user muốn xử lý tiếp ra sao.
+6. Lệnh nguy hiểm (rm, systemctl stop/restart, apt remove, chmod 777...): cảnh báo rủi ro rõ ràng trước khi đề xuất.
+7. Không bịa output. Nếu chưa chạy được lệnh thì chưa biết.
+8. Trả lời bằng tiếng Việt, ngắn gọn, súc tích.
 """
 
 DEFAULTS: dict[str, str] = {
