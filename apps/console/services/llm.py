@@ -1,39 +1,50 @@
-"""OpenCode Zen client — OpenAI-compatible chat completions with tool use.
+"""Gemini client — manual tool calling via the official `google-genai` SDK.
 
-Only one endpoint matters: `POST {base}/chat/completions`. We hit it with
-httpx, parse the response choice, and return a normalized dict the task layer
-can hand back as either an assistant message or a tool-call request.
+The agent loop in `apps.console.tasks` is split across multiple Celery tasks
+(LLM → return → user approve → SSH exec → resume LLM) which can span minutes
+of wall-clock. We therefore use Gemini's **stateless** generate_content call,
+passing full history each time and surfacing `function_call` parts back to
+the caller as `ToolCall` dataclasses instead of letting the SDK auto-execute.
 
-Free models (allowlisted in `apps.console.settings_keys.ALLOWED_MODELS`):
-- deepseek-v4-flash-free (default, best tool calling)
-- big-pickle
-- qwen-3.6-plus-free
-- minimax-m2.5-free
+Public surface (kept identical to the old OpenCode Zen client so `tasks.py`
+needs only minor changes): `chat_completion`, `ToolCall`, `CompletionResult`,
+`SHELL_TOOL_SCHEMA`, `LLMConfigError`, `LLMTransportError`.
 
-Retries: 3 attempts with exponential backoff for 429/5xx/network errors;
-non-retryable 4xx is raised immediately. 60s overall wall-clock per attempt
-(idle watchdog handled by httpx read timeout).
+`messages` follow the OpenAI format (system/user/assistant/tool with optional
+`tool_calls` / `tool_call_id`); we translate them into Gemini `Content` parts
+internally. This avoids touching `_build_history` in tasks.py.
+
+Async core + sync wrapper (`asyncio.run`) — Gemini SDK has both `models` and
+`aio.models` clients; we use the async one so each Celery task only spends
+the wall-clock it needs on the wire.
 """
 
 from __future__ import annotations
 
+import asyncio
+import json
 import logging
-import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any
 
-import httpx
 from django.conf import settings
+from google import genai
+from google.genai import errors as genai_errors
+from google.genai import types as genai_types
 
 logger = logging.getLogger("x106.console.llm")
 
+# Wall-clock cap for a single chat_completion. The tasks.py soft_time_limit
+# is 90s — leave headroom for retries + the SSH layer.
+_REQUEST_TIMEOUT_SEC = 60.0
+
 
 class LLMConfigError(RuntimeError):
-    """OPENCODE_ZEN_API_KEY missing or model not allowlisted."""
+    """GEMINI_API_KEY missing or model not allowlisted."""
 
 
 class LLMTransportError(RuntimeError):
-    """All retries exhausted on a network / 5xx error."""
+    """SDK call failed (network / 5xx / quota)."""
 
 
 @dataclass
@@ -48,119 +59,14 @@ class CompletionResult:
     text: str
     tool_calls: list[ToolCall]
     raw_finish_reason: str
-    usage: dict[str, int]
-    # DeepSeek "thinking" mode payload. Empty for non-reasoning models. When
-    # non-empty, MUST be echoed back on the assistant message in the next
-    # chat completion turn or DeepSeek 400s.
+    usage: dict[str, int] = field(default_factory=dict)
+    # Kept for backward compat with tasks.py; Gemini doesn't require echoing
+    # thoughts back, so this is always empty.
     reasoning_content: str = ""
 
 
-def _headers() -> dict[str, str]:
-    key = settings.OPENCODE_ZEN_API_KEY
-    if not key:
-        raise LLMConfigError(
-            "OPENCODE_ZEN_API_KEY is not set; cannot call OpenCode Zen"
-        )
-    return {
-        "Authorization": f"Bearer {key}",
-        "Content-Type": "application/json",
-    }
-
-
-def chat_completion(
-    messages: list[dict[str, Any]],
-    model: str,
-    tools: list[dict[str, Any]] | None = None,
-    temperature: float = 0.2,
-    max_tokens: int = 1024,
-) -> CompletionResult:
-    """One-shot chat completion. `messages` follow the OpenAI format
-    (`role`, `content`, optional `tool_calls` / `tool_call_id` / `name`).
-
-    Returns a `CompletionResult` with either text content, tool calls, or
-    both. The caller decides what to do based on `finish_reason`."""
-    payload: dict[str, Any] = {
-        "model": model,
-        "messages": messages,
-        "temperature": temperature,
-        "max_tokens": max_tokens,
-    }
-    if tools:
-        payload["tools"] = tools
-        payload["tool_choice"] = "auto"
-
-    url = f"{settings.OPENCODE_ZEN_BASE_URL.rstrip('/')}/chat/completions"
-    timeout = httpx.Timeout(connect=10.0, read=60.0, write=15.0, pool=10.0)
-
-    last_err: Exception | None = None
-    for attempt in range(3):
-        try:
-            with httpx.Client(timeout=timeout) as client:
-                resp = client.post(url, headers=_headers(), json=payload)
-            if resp.status_code in {429, 500, 502, 503, 504}:
-                raise LLMTransportError(
-                    f"transient {resp.status_code}: {resp.text[:200]}"
-                )
-            resp.raise_for_status()
-            return _parse(resp.json())
-        except (httpx.TransportError, LLMTransportError) as err:
-            last_err = err
-            wait = 2 ** attempt
-            logger.warning(
-                "chat_completion attempt %d failed: %r; retry in %ds",
-                attempt + 1,
-                err,
-                wait,
-            )
-            time.sleep(wait)
-        except httpx.HTTPStatusError as err:
-            # 4xx other than 429 — not retryable.
-            raise LLMTransportError(
-                f"http {err.response.status_code}: {err.response.text[:200]}"
-            ) from err
-
-    raise LLMTransportError(f"exhausted retries; last={last_err!r}")
-
-
-def _parse(body: dict[str, Any]) -> CompletionResult:
-    choice = (body.get("choices") or [{}])[0]
-    message = choice.get("message") or {}
-    text = (message.get("content") or "").strip()
-    raw_tool_calls = message.get("tool_calls") or []
-    tool_calls: list[ToolCall] = []
-    for tc in raw_tool_calls:
-        if (tc.get("type") or "function") != "function":
-            continue
-        fn = tc.get("function") or {}
-        raw_args = fn.get("arguments")
-        args: dict[str, Any] = {}
-        if isinstance(raw_args, str):
-            import json
-
-            try:
-                args = json.loads(raw_args) if raw_args else {}
-            except json.JSONDecodeError:
-                args = {"_raw": raw_args}
-        elif isinstance(raw_args, dict):
-            args = raw_args
-        tool_calls.append(
-            ToolCall(
-                id=tc.get("id") or "",
-                name=fn.get("name") or "",
-                arguments=args,
-            )
-        )
-
-    return CompletionResult(
-        text=text,
-        tool_calls=tool_calls,
-        raw_finish_reason=str(choice.get("finish_reason") or ""),
-        usage=body.get("usage") or {},
-        reasoning_content=str(message.get("reasoning_content") or ""),
-    )
-
-
-# Tool schema for `run_shell` — passed to chat_completion's `tools` arg.
+# OpenAI-style schema kept so tasks.py keeps importing it as a single source
+# of truth; converted to Gemini's `FunctionDeclaration` inside chat_completion.
 SHELL_TOOL_SCHEMA: dict[str, Any] = {
     "type": "function",
     "function": {
@@ -182,3 +88,232 @@ SHELL_TOOL_SCHEMA: dict[str, Any] = {
         },
     },
 }
+
+
+def chat_completion(
+    messages: list[dict[str, Any]],
+    model: str,
+    tools: list[dict[str, Any]] | None = None,
+    temperature: float = 0.2,
+    max_tokens: int = 1024,
+) -> CompletionResult:
+    """Sync façade — runs the async call in a fresh event loop per Celery task.
+    Cheap because each task only makes one (or a handful of) LLM calls."""
+    return asyncio.run(
+        _chat_completion_async(messages, model, tools, temperature, max_tokens)
+    )
+
+
+async def _chat_completion_async(
+    messages: list[dict[str, Any]],
+    model: str,
+    tools: list[dict[str, Any]] | None,
+    temperature: float,
+    max_tokens: int,
+) -> CompletionResult:
+    api_key = settings.GEMINI_API_KEY
+    if not api_key:
+        raise LLMConfigError(
+            "GEMINI_API_KEY is not set; cannot call Gemini API"
+        )
+
+    system_text, contents = _translate_messages(messages)
+    gemini_tools = _translate_tools(tools)
+
+    config = genai_types.GenerateContentConfig(
+        system_instruction=system_text or None,
+        temperature=temperature,
+        max_output_tokens=max_tokens,
+        tools=gemini_tools,
+        # Disable the SDK's auto-execution: every function_call must bubble up
+        # so the agent loop in tasks.py can persist it as a ConsoleExec row
+        # awaiting user approval.
+        automatic_function_calling=(
+            genai_types.AutomaticFunctionCallingConfig(disable=True)
+            if gemini_tools
+            else None
+        ),
+    )
+
+    client = genai.Client(api_key=api_key)
+
+    try:
+        response = await asyncio.wait_for(
+            client.aio.models.generate_content(
+                model=model,
+                contents=contents,
+                config=config,
+            ),
+            timeout=_REQUEST_TIMEOUT_SEC,
+        )
+    except asyncio.TimeoutError as err:
+        raise LLMTransportError(f"gemini timeout after {_REQUEST_TIMEOUT_SEC}s") from err
+    except genai_errors.APIError as err:
+        # Covers 4xx + 5xx from Gemini including quota/rate-limit errors.
+        raise LLMTransportError(f"gemini api error: {err}") from err
+    except Exception as err:
+        raise LLMTransportError(f"gemini call failed: {err!r}") from err
+
+    return _parse_response(response)
+
+
+def _translate_messages(
+    messages: list[dict[str, Any]],
+) -> tuple[str, list[genai_types.Content]]:
+    """OpenAI-format → (system_instruction string, list of Gemini Content).
+
+    OpenAI                          Gemini
+    ──────                          ──────
+    system                          (collected into system_instruction)
+    user                            Content(role="user", parts=[text])
+    assistant (text only)           Content(role="model", parts=[text])
+    assistant (with tool_calls)     Content(role="model", parts=[function_call,...])
+    tool (tool result)              Content(role="user", parts=[function_response])
+    """
+    system_parts: list[str] = []
+    contents: list[genai_types.Content] = []
+
+    for m in messages:
+        role = m.get("role")
+        if role == "system":
+            text = m.get("content") or ""
+            if text:
+                system_parts.append(text)
+            continue
+
+        if role == "user":
+            text = m.get("content") or ""
+            contents.append(
+                genai_types.Content(role="user", parts=[genai_types.Part(text=text)])
+            )
+            continue
+
+        if role == "assistant":
+            parts: list[genai_types.Part] = []
+            text = m.get("content") or ""
+            if text:
+                parts.append(genai_types.Part(text=text))
+            for tc in m.get("tool_calls") or []:
+                fn = tc.get("function") or {}
+                raw_args = fn.get("arguments")
+                args: dict[str, Any] = {}
+                if isinstance(raw_args, str):
+                    try:
+                        args = json.loads(raw_args) if raw_args else {}
+                    except json.JSONDecodeError:
+                        args = {"_raw": raw_args}
+                elif isinstance(raw_args, dict):
+                    args = raw_args
+                parts.append(
+                    genai_types.Part(
+                        function_call=genai_types.FunctionCall(
+                            id=tc.get("id") or "",
+                            name=fn.get("name") or "",
+                            args=args,
+                        )
+                    )
+                )
+            if parts:
+                contents.append(genai_types.Content(role="model", parts=parts))
+            continue
+
+        if role == "tool":
+            # OpenAI's `tool` message holds a function_response keyed by
+            # tool_call_id. Gemini wraps function responses as `user` Content.
+            raw = m.get("content") or ""
+            try:
+                payload = json.loads(raw) if isinstance(raw, str) else raw
+            except json.JSONDecodeError:
+                payload = {"output": raw}
+            contents.append(
+                genai_types.Content(
+                    role="user",
+                    parts=[
+                        genai_types.Part(
+                            function_response=genai_types.FunctionResponse(
+                                id=m.get("tool_call_id") or "",
+                                name=m.get("name") or "run_shell",
+                                response=payload if isinstance(payload, dict) else {"output": payload},
+                            )
+                        )
+                    ],
+                )
+            )
+            continue
+
+    return "\n\n".join(system_parts), contents
+
+
+def _translate_tools(tools: list[dict[str, Any]] | None) -> list[genai_types.Tool] | None:
+    if not tools:
+        return None
+    declarations: list[genai_types.FunctionDeclaration] = []
+    for t in tools:
+        if (t.get("type") or "function") != "function":
+            continue
+        fn = t.get("function") or {}
+        declarations.append(
+            genai_types.FunctionDeclaration(
+                name=fn.get("name") or "",
+                description=fn.get("description") or "",
+                parameters=_strip_unsupported_schema(fn.get("parameters") or {}),
+            )
+        )
+    if not declarations:
+        return None
+    return [genai_types.Tool(function_declarations=declarations)]
+
+
+def _strip_unsupported_schema(schema: dict[str, Any]) -> dict[str, Any]:
+    """Gemini's FunctionDeclaration accepts a subset of JSON Schema. Our
+    SHELL_TOOL_SCHEMA already uses only the supported keys, so this is a
+    passthrough — but kept as a chokepoint for future schema additions."""
+    return schema
+
+
+def _parse_response(response: Any) -> CompletionResult:
+    text_parts: list[str] = []
+    tool_calls: list[ToolCall] = []
+
+    candidates = getattr(response, "candidates", None) or []
+    finish_reason = ""
+    if candidates:
+        first = candidates[0]
+        finish_reason = str(getattr(first, "finish_reason", "") or "")
+        content = getattr(first, "content", None)
+        for part in (getattr(content, "parts", None) or []) if content else []:
+            fc = getattr(part, "function_call", None)
+            if fc is not None and getattr(fc, "name", None):
+                args = getattr(fc, "args", None) or {}
+                # Gemini may return MapComposite / dict-like — coerce to plain dict.
+                if not isinstance(args, dict):
+                    try:
+                        args = dict(args)
+                    except (TypeError, ValueError):
+                        args = {"_raw": str(args)}
+                tool_calls.append(
+                    ToolCall(
+                        id=getattr(fc, "id", "") or "",
+                        name=fc.name,
+                        arguments=args,
+                    )
+                )
+                continue
+            t = getattr(part, "text", None)
+            if t:
+                text_parts.append(t)
+
+    usage: dict[str, int] = {}
+    um = getattr(response, "usage_metadata", None)
+    if um is not None:
+        for k in ("prompt_token_count", "candidates_token_count", "total_token_count"):
+            v = getattr(um, k, None)
+            if isinstance(v, int):
+                usage[k] = v
+
+    return CompletionResult(
+        text="".join(text_parts).strip(),
+        tool_calls=tool_calls,
+        raw_finish_reason=finish_reason,
+        usage=usage,
+    )

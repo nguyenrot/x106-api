@@ -50,7 +50,7 @@ systemctl enable --now x106-api x106-celery-worker x106-celery-beat
 systemctl disable --now x106-worker.service 2>/dev/null || true
 ```
 
-`/var/www/api/.env` contains the runtime env (DJANGO_SECRET_KEY, DB_*, JWT_SECRET, COOKIE_DOMAIN=.kynguyen.cc, REDIS_URL=redis://127.0.0.1:6379/0, OPENCODE_ZEN_API_KEY, OPENCODE_ZEN_BASE_URL, CONSOLE_SSH_HOST/PORT/USER/KEY_PATH, etc.). See `infra/console-setup.md` for the console-specific bits.
+`/var/www/api/.env` contains the runtime env (DJANGO_SECRET_KEY, DB_*, JWT_SECRET, COOKIE_DOMAIN=.kynguyen.cc, REDIS_URL=redis://127.0.0.1:6379/0, GEMINI_API_KEY, CONSOLE_SSH_HOST/PORT/USER/KEY_PATH, etc.). See `infra/console-setup.md` for the console-specific bits.
 
 ### Migrations on the VPS
 
@@ -114,7 +114,7 @@ Both signed with `JWT_SECRET` (HS256). Cookie reading lives in `apps.accounts.au
 
 ### VPS console + AI ops assistant (`apps.console`)
 
-The AI surface in the ecosystem. AI calls run through **OpenCode Zen** (free-tier OpenAI-compatible gateway at `https://opencode.ai/zen/v1`), default model `deepseek-v4-flash-free`; shell commands run via **paramiko SSH** to a dedicated `x106-ops` user on the same VPS — never subprocess on the api service itself.
+The AI surface in the ecosystem. AI calls run through the **Google Gemini API** via the official `google-genai` SDK, default model `gemini-2.5-flash`; shell commands run via **paramiko SSH** to a dedicated `x106-ops` user on the same VPS — never subprocess on the api service itself.
 
 Four tables (`console_settings`, `console_sessions`, `console_messages`, `console_execs`); the last doubles as audit trail. Lifecycle:
 
@@ -130,9 +130,9 @@ chat message (user) → run_console_chat → LLM tool_call → ConsoleExec (awai
 
 Hard caps: `console.max_agent_steps` (default 8) to stop runaway loops; `console.command_timeout_sec` (default 30) on each SSH call; per-task `time_limit=120/soft=90`. Beat tasks: `recover_stuck_execs` (60s), `cleanup_old_execs` (1h, drops >30-day terminal rows).
 
-Safety: `apps.console.services.danger.classify` returns `safe`/`write`/`destructive` from a regex+keyword classifier; every AI command must be Approved regardless of level (policy); `destructive` additionally requires typing the `console.destroy_phrase` (default `DESTROY`). The Nemotron-3-super-free model is hardcoded off the allowlist because NVIDIA logs prompts.
+Safety: `apps.console.services.danger.classify` returns `safe`/`write`/`destructive` from a regex+keyword classifier; every AI command must be Approved regardless of level (policy); `destructive` additionally requires typing the `console.destroy_phrase` (default `DESTROY`).
 
-**Reasoning models gotcha:** DeepSeek-V4-Flash returns `reasoning_content` on the assistant message during tool-use turns. It must be persisted and replayed on the next chat completion or the provider returns HTTP 400. `ConsoleMessage.reasoning_content` holds it; `_build_history` re-emits it on assistant entries with `tool_calls`.
+**Gemini SDK shape:** the agent loop spans multiple Celery tasks separated by user-approval wait time, so we use the SDK's **stateless** `client.aio.models.generate_content` with `automatic_function_calling=disable`. `chat_completion` in `apps/console/services/llm.py` translates the OpenAI-style message list (system/user/assistant/tool) into Gemini `Content` parts and surfaces `function_call`s back as `ToolCall` dataclasses for `tasks.py` to persist as `ConsoleExec` rows.
 
 One-time prod setup (x106-ops user, sshd keys, sudoers whitelist, env vars) lives in `infra/console-setup.md`. Missing env vars → endpoints return 503 with a clear message, no crash.
 

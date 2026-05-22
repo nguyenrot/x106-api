@@ -17,16 +17,12 @@ SETTING_MAX_AGENT_STEPS = "console.max_agent_steps"
 SETTING_DESTROY_PHRASE = "console.destroy_phrase"
 
 
-# ─── Model allowlist (OpenCode Zen free tier) ────────────────────────────
+# ─── Model allowlist (Google Gemini API) ─────────────────────────────────
 
-# Hardcoded — `nemotron-3-super-free` is excluded because NVIDIA logs prompts
-# and outputs (see https://opencode.ai/docs/zen). VPS ops commands may contain
-# hostnames, paths, log snippets we don't want shipped to a third-party.
 ALLOWED_MODELS: tuple[str, ...] = (
-    "deepseek-v4-flash-free",
-    "big-pickle",
-    "qwen-3.6-plus-free",
-    "minimax-m2.5-free",
+    "gemini-2.5-flash",
+    "gemini-2.5-pro",
+    "gemini-2.5-flash-lite",
 )
 
 
@@ -54,7 +50,7 @@ Quy tắc làm việc:
 DEFAULTS: dict[str, str] = {
     SETTING_ENABLED: "true",
     SETTING_SYSTEM_PROMPT: DEFAULT_SYSTEM_PROMPT,
-    SETTING_AI_MODEL: "deepseek-v4-flash-free",
+    SETTING_AI_MODEL: "gemini-2.5-flash",
     SETTING_COMMAND_TIMEOUT_SEC: "30",
     SETTING_MAX_AGENT_STEPS: "8",
     SETTING_DESTROY_PHRASE: "DESTROY",

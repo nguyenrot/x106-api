@@ -79,20 +79,19 @@ visudo -c   # MUST print "/etc/sudoers: parsed OK"
 Any restart / stop / disable command must come from a fully-typed Approve
 flow in the UI — it cannot ride along on this whitelist.
 
-## 6. Get an OpenCode Zen API key
+## 6. Get a Gemini API key
 
-Sign up at <https://opencode.ai/> and grab a Zen-tier key. The free models
-the console allowlists (`deepseek-v4-flash-free`, `big-pickle`,
-`qwen-3.6-plus-free`, `minimax-m2.5-free`) don't bill against credit, but a
-key is still required to call the endpoint.
+Visit <https://aistudio.google.com/apikey> and create a key. The console
+allowlists three Gemini 2.5 models (`gemini-2.5-flash`, `gemini-2.5-pro`,
+`gemini-2.5-flash-lite`); free tier is enough for normal ops use but is
+rate-limited (5–15 RPM, 100–1000 RPD depending on model).
 
 ## 7. Add env vars to `/var/www/api/.env`
 
 Append:
 
 ```ini
-OPENCODE_ZEN_API_KEY=sk-xxxxxxxxxxxxxxxxxxxxxxxxxxxx
-OPENCODE_ZEN_BASE_URL=https://opencode.ai/zen/v1
+GEMINI_API_KEY=AIza-xxxxxxxxxxxxxxxxxxxxxxxxxxxx
 CONSOLE_SSH_HOST=127.0.0.1
 CONSOLE_SSH_PORT=22
 CONSOLE_SSH_USER=x106-ops

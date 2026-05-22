@@ -125,15 +125,12 @@ X106_ADMIN_COOKIE_MAX_AGE = int(timedelta(hours=8).total_seconds())
 
 # ─── VPS console (apps.console) ───────────────────────────────────────────
 #
-# AI ops assistant runs LLM calls through the OpenCode Zen free-tier gateway
-# (OpenAI-compatible). Shell execution goes through paramiko SSH to a
-# dedicated `x106-ops` user on the same VPS — never via subprocess on the
-# api service itself. All four CONSOLE_* + OPENCODE_ZEN_API_KEY env vars
-# must be set on prod systemd units before the feature is usable.
-OPENCODE_ZEN_API_KEY = env.str("OPENCODE_ZEN_API_KEY", default="")
-OPENCODE_ZEN_BASE_URL = env.str(
-    "OPENCODE_ZEN_BASE_URL", default="https://opencode.ai/zen/v1"
-)
+# AI ops assistant runs LLM calls through the Google Gemini API via the
+# official `google-genai` SDK. Shell execution goes through paramiko SSH to
+# a dedicated `x106-ops` user on the same VPS — never via subprocess on the
+# api service itself. GEMINI_API_KEY + all four CONSOLE_SSH_* env vars must
+# be set on prod systemd units before the feature is usable.
+GEMINI_API_KEY = env.str("GEMINI_API_KEY", default="")
 CONSOLE_SSH_HOST = env.str("CONSOLE_SSH_HOST", default="127.0.0.1")
 CONSOLE_SSH_PORT = env.int("CONSOLE_SSH_PORT", default=22)
 CONSOLE_SSH_USER = env.str("CONSOLE_SSH_USER", default="x106-ops")
