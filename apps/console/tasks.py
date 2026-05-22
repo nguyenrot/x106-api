@@ -113,10 +113,13 @@ def run_console_chat(message_id: str) -> None:
                     danger_reasons=reasons,
                     tool_call_id=tc.id,
                 )
-            # Save any prose the model wrote alongside the tool call.
+            # Save any prose the model wrote alongside the tool call, plus
+            # reasoning_content for DeepSeek thinking models (replayed in
+            # _build_history so the next turn passes the provider check).
             ConsoleMessage.objects.filter(pk=msg.pk, status=ConsoleMessage.STATUS_STREAMING).update(
                 status=ConsoleMessage.STATUS_AWAITING_CONFIRM,
                 content=result.text,
+                reasoning_content=result.reasoning_content,
             )
         return
 
@@ -124,6 +127,7 @@ def run_console_chat(message_id: str) -> None:
     ConsoleMessage.objects.filter(pk=msg.pk, status=ConsoleMessage.STATUS_STREAMING).update(
         status=ConsoleMessage.STATUS_DONE,
         content=result.text,
+        reasoning_content=result.reasoning_content,
     )
     ConsoleSession.objects.filter(pk=msg.session_id).update(updated_at=timezone.now())
 
@@ -159,6 +163,9 @@ def _build_history(session: ConsoleSession) -> list[dict]:
 
         if proposed:
             assistant_msg: dict = {"role": "assistant", "content": m.content or ""}
+            if m.reasoning_content:
+                # Required by DeepSeek thinking-mode models on the next round.
+                assistant_msg["reasoning_content"] = m.reasoning_content
             assistant_msg["tool_calls"] = [
                 {
                     "id": e.tool_call_id,

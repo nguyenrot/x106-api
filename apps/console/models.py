@@ -83,6 +83,9 @@ class ConsoleMessage(models.Model):
     )
     role = models.CharField(max_length=16, choices=ROLE_CHOICES)
     content = models.TextField(blank=True, default="")
+    # DeepSeek-style "thinking mode" payload that MUST be echoed back to the
+    # provider on the next tool round-trip; empty for non-reasoning models.
+    reasoning_content = models.TextField(blank=True, default="")
     step_count = models.PositiveIntegerField(default=0)
     status = models.CharField(max_length=20, choices=STATUS_CHOICES, default=STATUS_DONE)
     error_message = models.TextField(blank=True, default="")

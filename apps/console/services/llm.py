@@ -49,6 +49,10 @@ class CompletionResult:
     tool_calls: list[ToolCall]
     raw_finish_reason: str
     usage: dict[str, int]
+    # DeepSeek "thinking" mode payload. Empty for non-reasoning models. When
+    # non-empty, MUST be echoed back on the assistant message in the next
+    # chat completion turn or DeepSeek 400s.
+    reasoning_content: str = ""
 
 
 def _headers() -> dict[str, str]:
@@ -152,6 +156,7 @@ def _parse(body: dict[str, Any]) -> CompletionResult:
         tool_calls=tool_calls,
         raw_finish_reason=str(choice.get("finish_reason") or ""),
         usage=body.get("usage") or {},
+        reasoning_content=str(message.get("reasoning_content") or ""),
     )
 
 
