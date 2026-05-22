@@ -123,7 +123,11 @@ class SessionViewSet(
         )
         exec_row = ConsoleExec.objects.create(
             session=session,
-            message=None,  # not part of an AI loop
+            # Link to the user message so the UI renders the CommandBlock under
+            # the matching chat bubble. _resume_chat_if_linked skips messages
+            # whose role isn't `assistant`, so this won't accidentally trigger
+            # an agent loop.
+            message=user_msg,
             user=session.user,
             command=command,
             source=ConsoleExec.SOURCE_USER_DIRECT,

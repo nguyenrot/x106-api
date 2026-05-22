@@ -282,8 +282,12 @@ def run_console_exec(exec_id: str) -> None:
 
 def _resume_chat_if_linked(exec_row: ConsoleExec) -> None:
     """If this exec was proposed by the AI as part of an agent loop, bump the
-    parent message's step_count and re-enqueue run_console_chat."""
+    parent message's step_count and re-enqueue run_console_chat. Direct
+    user-typed execs also link to their user message (so the UI can group
+    them) but must NOT trigger a chat resume."""
     if not exec_row.message_id:
+        return
+    if exec_row.source != ConsoleExec.SOURCE_AI_PROPOSED:
         return
     # Only re-enqueue once *all* sibling execs (the model could have proposed
     # multiple tool calls in one turn) have left awaiting_confirm/approved/running.
