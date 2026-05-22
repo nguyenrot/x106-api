@@ -9,7 +9,9 @@ Type=simple
 # is still enforced by the x106_admin JWT cookie check inside the daemon.
 User=root
 Group=root
-WorkingDirectory=/
+# Keep WorkingDirectory at the app root so `python -m terminal_ws` can find
+# the module. The spawned shell does its own os.chdir("/") in server.py.
+WorkingDirectory=/var/www/api
 EnvironmentFile=/var/www/api/.env
 Environment=PYTHONUNBUFFERED=1
 Environment=TERMINAL_WS_HOST=127.0.0.1
