@@ -189,6 +189,37 @@ class MessagePollView(APIView):
         return Response(MessageSerializer(msg).data)
 
 
+class MessageRetryView(APIView):
+    """POST /messages/{id}/retry — revive a failed assistant turn.
+
+    Resets the row to pending, clears the prior error, and re-enqueues the
+    agent loop. step_count is preserved so the previous tool-call budget is
+    still respected (you don't get to dodge max_agent_steps by retrying)."""
+
+    permission_classes = [IsAdminToken]
+
+    def post(self, request, message_id: str):
+        _require_enabled()
+        try:
+            msg = ConsoleMessage.objects.select_related("session").get(
+                pk=message_id, session__user=request.user
+            )
+        except ConsoleMessage.DoesNotExist as err:
+            raise NotFound("message not found") from err
+        if msg.role != ConsoleMessage.ROLE_ASSISTANT:
+            raise ValidationError({"role": "only assistant messages can be retried"})
+        if msg.status != ConsoleMessage.STATUS_FAILED:
+            raise ValidationError({"status": f"message is {msg.status}, can only retry failed"})
+
+        updated = ConsoleMessage.objects.filter(
+            pk=msg.pk, status=ConsoleMessage.STATUS_FAILED
+        ).update(status=ConsoleMessage.STATUS_PENDING, error_message="")
+        if not updated:
+            raise ValidationError({"status": "message status changed; refresh"})
+        run_console_chat.delay(msg.pk)
+        return Response({"status": ConsoleMessage.STATUS_PENDING})
+
+
 class ExecViewSet(viewsets.GenericViewSet):
     permission_classes = [IsAdminToken]
     serializer_class = ExecSerializer
