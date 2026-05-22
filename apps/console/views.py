@@ -60,18 +60,6 @@ def _require_enabled():
         raise PermissionDenied("VPS console is currently disabled.")
 
 
-def _safety_check_for_direct(exec_row: ConsoleExec, destroy_phrase: str) -> None:
-    """For `$ ` direct commands: safe/write auto-approve, destructive needs the
-    phrase. Raises ValidationError when the phrase is wrong."""
-    if exec_row.danger_level != ConsoleExec.DANGER_DESTRUCTIVE:
-        return
-    expected = get_setting(SETTING_DESTROY_PHRASE)
-    if destroy_phrase.strip() != expected.strip():
-        raise ValidationError(
-            {"destroy_phrase": f"Type '{expected}' exactly to confirm a destructive command."}
-        )
-
-
 class SessionViewSet(
     mixins.ListModelMixin,
     mixins.CreateModelMixin,
@@ -136,14 +124,24 @@ class SessionViewSet(
             status=ConsoleExec.STATUS_AWAITING_CONFIRM,
         )
 
-        if level == ConsoleExec.DANGER_DESTRUCTIVE:
-            _safety_check_for_direct(exec_row, destroy_phrase)
+        # safe + write auto-approve. destructive stays awaiting_confirm so the
+        # ConfirmPanel can collect the DESTROY phrase via /execs/{id}/approve.
+        auto_approve = level != ConsoleExec.DANGER_DESTRUCTIVE
+        if auto_approve:
+            ConsoleExec.objects.filter(pk=exec_row.pk, status=ConsoleExec.STATUS_AWAITING_CONFIRM).update(
+                status=ConsoleExec.STATUS_APPROVED
+            )
+            run_console_exec.delay(exec_row.pk)
+        # An explicit destroy_phrase argument bundled with the POST is supported
+        # (CLI / power user path): if provided and correct, auto-approve too.
+        elif destroy_phrase:
+            expected = get_setting(SETTING_DESTROY_PHRASE)
+            if destroy_phrase.strip() == expected.strip():
+                ConsoleExec.objects.filter(
+                    pk=exec_row.pk, status=ConsoleExec.STATUS_AWAITING_CONFIRM
+                ).update(status=ConsoleExec.STATUS_APPROVED)
+                run_console_exec.delay(exec_row.pk)
 
-        # Auto-approve safe + write (level guard above handled destructive).
-        ConsoleExec.objects.filter(pk=exec_row.pk, status=ConsoleExec.STATUS_AWAITING_CONFIRM).update(
-            status=ConsoleExec.STATUS_APPROVED
-        )
-        run_console_exec.delay(exec_row.pk)
         ConsoleSession.objects.filter(pk=session.pk).update(updated_at=timezone.now())
 
         exec_row.refresh_from_db()
