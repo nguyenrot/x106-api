@@ -50,7 +50,7 @@ systemctl enable --now x106-api x106-celery-worker x106-celery-beat
 systemctl disable --now x106-worker.service 2>/dev/null || true
 ```
 
-`/var/www/api/.env` contains the runtime env (DJANGO_SECRET_KEY, DB_*, JWT_SECRET, COOKIE_DOMAIN=.kynguyen.cc, REDIS_URL=redis://127.0.0.1:6379/0, GEMINI_API_KEY, CONSOLE_SSH_HOST/PORT/USER/KEY_PATH, etc.). See `infra/console-setup.md` for the console-specific bits.
+`/var/www/api/.env` contains the runtime env (DJANGO_SECRET_KEY, DB_*, JWT_SECRET, COOKIE_DOMAIN=.kynguyen.cc, REDIS_URL=redis://127.0.0.1:6379/0, etc.). The admin console AI no longer needs an API key — it shells out to the `agy` Antigravity CLI installed under root's home. See `infra/console-setup.md` for the console-specific bits.
 
 ### Migrations on the VPS
 
@@ -114,27 +114,29 @@ Both signed with `JWT_SECRET` (HS256). Cookie reading lives in `apps.accounts.au
 
 ### VPS console + AI ops assistant (`apps.console`)
 
-The AI surface in the ecosystem. AI calls run through the **Google Gemini API** via the official `google-genai` SDK, default model `gemini-2.5-flash`; shell commands run via **paramiko SSH** to a dedicated `x106-ops` user on the same VPS — never subprocess on the api service itself.
+The AI surface in the ecosystem. AI calls shell out to the **`agy` Antigravity CLI** (Google) at `/root/.local/bin/agy` as a subprocess from `x106-celery-worker` (which runs as root). agy authenticates via Google OAuth, executes shell commands / reads files / edits code autonomously — no human-approve gate, no ConsoleExec rows, no run_shell tool.
 
-Four tables (`console_settings`, `console_sessions`, `console_messages`, `console_execs`); the last doubles as audit trail. Lifecycle:
+Three tables: `console_settings`, `console_sessions`, `console_messages`. Lifecycle per chat turn:
 
 ```
-chat message (user) → run_console_chat → LLM tool_call → ConsoleExec (awaiting_confirm)
-                                                                ↓ user Approves
-                                                          run_console_exec → SSH → done
-                                                                ↓
-                                                       run_console_chat (loop)
-                                                                ↓
-                                                  final assistant text → done
+user message → ConsoleMessage (role=user, done)
+             + ConsoleMessage (role=assistant, pending)
+             → run_console_chat (Celery)
+                    ↓
+             apps.console.services.agy.run_agy(prompt)
+                    ↓ subprocess `agy --print --print-timeout 3m30s "<full prompt>"`
+             agy autonomously runs lệnh, đọc file, …
+                    ↓
+             stdout text → ConsoleMessage.content + status=done
 ```
 
-Hard caps: `console.max_agent_steps` (default 8) to stop runaway loops; `console.command_timeout_sec` (default 30) on each SSH call; per-task `time_limit=120/soft=90`. Beat tasks: `recover_stuck_execs` (60s), `cleanup_old_execs` (1h, drops >30-day terminal rows).
+agy's `--print` mode is **stateless**, so `_build_prompt` in `apps/console/tasks.py` concatenates `console.system_prompt` + the last 12 ConsoleMessage rows into a single string each turn. agy's own settings.json must set `"toolPermission": "always-proceed"` (see infra/console-setup.md) or it will hang waiting for a TTY-only permission prompt.
 
-Safety: `apps.console.services.danger.classify` returns `safe`/`write`/`destructive` from a regex+keyword classifier; every AI command must be Approved regardless of level (policy); `destructive` additionally requires typing the `console.destroy_phrase` (default `DESTROY`).
+Hard caps: per-task Celery `time_limit=300/soft=270`; agy's own `--print-timeout=3m30s`; outer `subprocess.run(..., timeout=240)`. Beat task: `cleanup_old_messages` (1h, drops assistant messages >60 days old).
 
-**Gemini SDK shape:** the agent loop spans multiple Celery tasks separated by user-approval wait time, so we use the SDK's **stateless** `client.aio.models.generate_content` with `automatic_function_calling=disable`. `chat_completion` in `apps/console/services/llm.py` translates the OpenAI-style message list (system/user/assistant/tool) into Gemini `Content` parts and surfaces `function_call`s back as `ToolCall` dataclasses for `tasks.py` to persist as `ConsoleExec` rows.
+Security: agy runs with root on the VPS. There is no whitelist, danger classifier, or approval flow. Any user prompt can become any command — trust the model + be careful with phrasing. To disable temporarily: `UPDATE console_settings SET value='false' WHERE \`key\`='console.enabled'`.
 
-One-time prod setup (x106-ops user, sshd keys, sudoers whitelist, env vars) lives in `infra/console-setup.md`. Missing env vars → endpoints return 503 with a clear message, no crash.
+One-time setup (install agy, OAuth sign-in, verify always-proceed) lives in `infra/console-setup.md`. agy missing or returning an error → endpoint returns the failure inline; the admin UI shows a friendly Vietnamese message + Retry button.
 
 ### Routes (mounted under `/api/v1`)
 

@@ -1,131 +1,83 @@
 # VPS Console — one-time infrastructure setup
 
-The `/api/v1/admin/console/` endpoints run shell commands on the VPS through
-**SSH** to a dedicated low-privilege user (`x106-ops`), not via subprocess on
-the `x106-api` service. The setup below is manual, runs once, and must be
-finished **on the VPS** before the feature works (otherwise endpoints return
-503 with a clear error).
+The `/api/v1/admin/console/` endpoints drive the **`agy` Antigravity CLI**
+as a subprocess. `agy` runs **as root on the VPS itself** (the
+`x106-celery-worker` systemd unit also runs as root, so no SSH or sudo
+indirection is needed). agy handles shell execution, file reads, and code
+edits autonomously inside its own process.
 
-Do everything as `root` on the VPS unless noted.
+There is no human-in-the-loop approval gate. agy runs with root-level
+access — assume any prompt can become any command.
 
-## 1. Create the `x106-ops` Linux user
-
-```bash
-useradd -m -s /bin/bash x106-ops
-sudo -u x106-ops mkdir -p /home/x106-ops/.ssh
-chmod 700 /home/x106-ops/.ssh
-chown -R x106-ops:x106-ops /home/x106-ops/.ssh
-```
-
-The user has no special privileges. Read access to the parts of `/var/www/`
-the console will inspect is controlled by file permissions.
-
-## 2. Generate an ed25519 key pair
-
-Run **on your laptop** (not the VPS) so the private key never touches a remote
-shell history:
+## 1. Install agy on the VPS
 
 ```bash
-ssh-keygen -t ed25519 -f ./console_ssh_key -N "" -C "x106-console"
+# Run interactively in a TTY as root so the OAuth browser flow can complete.
+curl -fsSL https://antigravity.google/install.sh | sh
+# Or follow the official install instructions at
+# https://github.com/google-antigravity/agy
 ```
 
-This produces `console_ssh_key` (private) + `console_ssh_key.pub` (public).
+After install, `agy` lives at `/root/.local/bin/agy`. Make sure that
+directory is in root's `PATH` (the installer normally writes a shell
+profile entry; the Celery worker uses the absolute path so this is just
+for interactive convenience).
 
-## 3. Install the public key on the VPS
+## 2. OAuth — sign in to a Google account
 
 ```bash
-# On laptop:
-scp console_ssh_key.pub root@82.197.69.172:/tmp/
-
-# On VPS:
-cat /tmp/console_ssh_key.pub > /home/x106-ops/.ssh/authorized_keys
-chmod 600 /home/x106-ops/.ssh/authorized_keys
-chown x106-ops:x106-ops /home/x106-ops/.ssh/authorized_keys
-rm /tmp/console_ssh_key.pub
+agy install   # follows the setup flow
+agy --print "hello"   # confirms auth + first response
 ```
 
-## 4. Install the private key for the `x106-api` service
+agy stores its OAuth token at `/root/.gemini/antigravity-cli/`. The
+account used here is the one that pays for / has free-tier Gemini quota.
+
+## 3. Confirm tool permission is auto-approve
 
 ```bash
-# On laptop:
-scp console_ssh_key root@82.197.69.172:/tmp/
-
-# On VPS:
-mkdir -p /etc/x106
-chmod 750 /etc/x106
-mv /tmp/console_ssh_key /etc/x106/console_ssh_key
-# x106-api runs as root per infra/systemd/x106-api.service, so root owns it.
-# If you later move the service to a dedicated user, chown to that user.
-chmod 600 /etc/x106/console_ssh_key
-chown root:root /etc/x106/console_ssh_key
+cat /root/.gemini/antigravity-cli/settings.json
+# Must contain: "toolPermission": "always-proceed"
 ```
 
-## 5. Sudoers whitelist (read-only ops only)
+If not, edit the file or run agy interactively once and accept "always
+allow" — otherwise agy will hang waiting for TTY input inside the
+subprocess and our outer timeout will kill it.
 
-The AI assistant will sometimes need to `sudo` to inspect systemd / pm2.
-Whitelist *only* the read-only verbs — never anything that mutates state.
+## 4. Verify headless invocation
+
+The Celery worker calls agy via `subprocess.run([...])` with no TTY. Test
+the same path:
 
 ```bash
-cat > /etc/sudoers.d/x106-ops <<'EOF'
-# Read-only inspection for the AI ops console. Update with care.
-x106-ops ALL=(ALL) NOPASSWD: /bin/systemctl status *, /usr/bin/systemctl status *
-x106-ops ALL=(ALL) NOPASSWD: /usr/bin/journalctl --no-pager *, /bin/journalctl --no-pager *
-x106-ops ALL=(ALL) NOPASSWD: /usr/bin/pm2 list, /usr/bin/pm2 describe *, /usr/bin/pm2 logs *
-EOF
-chmod 440 /etc/sudoers.d/x106-ops
-visudo -c   # MUST print "/etc/sudoers: parsed OK"
+echo "" | /root/.local/bin/agy --print --print-timeout 60s "free -h, df -h. Tóm tắt ngắn." 2>&1
+# Expected: a short Vietnamese summary, exit code 0
 ```
 
-Any restart / stop / disable command must come from a fully-typed Approve
-flow in the UI — it cannot ride along on this whitelist.
+If this returns "could not open TTY" or hangs, the always-proceed setting
+is missing (see step 3).
 
-## 6. Get a Gemini API key
-
-Visit <https://aistudio.google.com/apikey> and create a key. The console
-allowlists three Gemini 2.5 models (`gemini-2.5-flash`, `gemini-2.5-pro`,
-`gemini-2.5-flash-lite`); free tier is enough for normal ops use but is
-rate-limited (5–15 RPM, 100–1000 RPD depending on model).
-
-## 7. Add env vars to `/var/www/api/.env`
-
-Append:
-
-```ini
-GEMINI_API_KEY=AIza-xxxxxxxxxxxxxxxxxxxxxxxxxxxx
-CONSOLE_SSH_HOST=127.0.0.1
-CONSOLE_SSH_PORT=22
-CONSOLE_SSH_USER=x106-ops
-CONSOLE_SSH_KEY_PATH=/etc/x106/console_ssh_key
-```
-
-## 8. Restart the API + workers
+## 5. Restart the API + workers
 
 ```bash
-systemctl daemon-reload   # only needed if you edited the unit file
+systemctl daemon-reload   # only needed if the unit file changed
 systemctl restart x106-api x106-celery-worker x106-celery-beat
 ```
 
-## 9. Smoke test
+## 6. Smoke test from the admin UI
 
-```bash
-# From your laptop, with an admin JWT:
-TOKEN=$(curl -s https://api.kynguyen.cc/api/v1/admin/login \
-  -H 'Content-Type: application/json' \
-  -d '{"username":"<admin>","password":"<pwd>"}' | jq -r .token)
-
-curl -fsS https://api.kynguyen.cc/api/v1/admin/console/sessions \
-  -H "Authorization: Bearer $TOKEN"
-# → [] (empty list, status 200)
-
-curl -fsS https://api.kynguyen.cc/api/v1/admin/console/settings \
-  -H "Authorization: Bearer $TOKEN"
-# → JSON with enabled:true, ai_model, allowed_models, …
-```
-
-Then open <https://admin.kynguyen.cc/dashboard/console>, create a session,
-type `$ df -h` and confirm output renders.
+Open <https://admin.kynguyen.cc/dashboard/console>, create a session,
+send "kiểm tra ram và disk". Within ~10–30s agy returns a single
+markdown-formatted reply.
 
 ## Rollback
 
-Delete `/etc/sudoers.d/x106-ops`, remove `console_ssh_key`, and unset the
-env vars. The feature degrades to 503 cleanly.
+If something is wrong, disable the feature at the database level:
+
+```bash
+mysql -u root finance_app -e "
+  UPDATE console_settings SET value='false' WHERE \`key\`='console.enabled';
+"
+```
+
+The `/dashboard/console` chat then returns 503 cleanly until re-enabled.
