@@ -79,7 +79,7 @@ apps/
   ledger/       # personal finance (transactions, categories, budgets)
   content/      # SiteContent (public + admin upsert)
   console/      # VPS console + AI ops assistant (OpenCode Zen + paramiko SSH); see infra/console-setup.md
-terminal_ws/    # Standalone async daemon — WebSocket bridge to a local PTY. Runs as systemd `x106-terminal-ws` (User=x106-ops, :7682). Auth via x106_admin JWT cookie. Powers the admin app's Terminal tab via xterm.js. Setup in infra/terminal-ws-setup.md.
+terminal_ws/    # Standalone async daemon — WebSocket bridge to a local PTY. Runs as systemd `x106-terminal-ws` (User=root, cwd=/, :7682). Auth via x106_admin JWT cookie. Spawned shell is a root login shell — no sudoers sandbox; same risk profile as the previous ttyd. Powers the admin app's Terminal tab via xterm.js. Setup in infra/terminal-ws-setup.md.
 infra/systemd/  # production unit files (x106-api, x106-celery-worker, x106-celery-beat, x106-terminal-ws)
 infra/console-setup.md  # one-time x106-ops user + ssh key + sudoers setup on VPS
 .github/workflows/deploy.yml

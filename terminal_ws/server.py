@@ -112,13 +112,17 @@ def _spawn_shell() -> tuple[int, int]:
     """Fork a child running `bash -l` attached to a fresh PTY. Returns (pid, master_fd)."""
     pid, fd = pty.fork()
     if pid == 0:
-        # Child — bare environment + login shell.
+        # Child — start at filesystem root regardless of systemd WorkingDirectory.
+        try:
+            os.chdir("/")
+        except OSError:
+            pass
         env = {
             "TERM": "xterm-256color",
             "LANG": os.environ.get("LANG", "en_US.UTF-8"),
             "LC_ALL": os.environ.get("LC_ALL", "en_US.UTF-8"),
-            "HOME": os.environ.get("HOME", "/home/x106-ops"),
-            "USER": os.environ.get("USER", "x106-ops"),
+            "HOME": os.environ.get("HOME", "/root"),
+            "USER": os.environ.get("USER", "root"),
             "PATH": "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
             "SHELL": SHELL_PATH,
         }

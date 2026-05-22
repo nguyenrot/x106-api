@@ -4,15 +4,18 @@ After=network.target
 
 [Service]
 Type=simple
-User=x106-ops
-Group=x106-ops
-WorkingDirectory=/var/www/api
+# Daemon runs as root so the spawned shell is a root shell. This matches the
+# previous ttyd setup and is what the admin actually wants for ops work. Auth
+# is still enforced by the x106_admin JWT cookie check inside the daemon.
+User=root
+Group=root
+WorkingDirectory=/
 EnvironmentFile=/var/www/api/.env
 Environment=PYTHONUNBUFFERED=1
 Environment=TERMINAL_WS_HOST=127.0.0.1
 Environment=TERMINAL_WS_PORT=7682
-Environment=HOME=/home/x106-ops
-Environment=USER=x106-ops
+Environment=HOME=/root
+Environment=USER=root
 ExecStart=/var/www/api/.venv/bin/python -m terminal_ws
 Restart=always
 RestartSec=3

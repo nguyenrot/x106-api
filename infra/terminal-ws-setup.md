@@ -3,16 +3,19 @@
 `x106-terminal-ws.service` replaces the old `ttyd` daemon as the backend for
 the admin app's **Terminal** tab. xterm.js in the browser opens a WebSocket
 to `wss://admin.kynguyen.cc/terminal/ws`, nginx proxies to the bridge on
-`127.0.0.1:7682`, and the bridge spawns a `bash -l` PTY as the `x106-ops`
-user.
+`127.0.0.1:7682`, and the bridge spawns a `bash -l` PTY as **root** (cwd `/`).
+
+> ⚠️ **Security note:** Same risk profile as the previous ttyd setup — the
+> shell is root, no sudoers sandbox. The single safety net is the
+> `x106_admin` JWT cookie (verified by nginx `auth_request` *and* inside
+> the daemon). Don't expose this beyond the admin cookie gate.
 
 These steps are **one-time** and must be run **manually as root on the VPS**
 the first time you deploy the bridge. After that, regular `git push` to
 `nguyenrot/x106-api` ships code changes via `deploy.yml` automatically.
 
-The bridge re-uses the `x106-ops` user, the sudoers whitelist, and the
-nginx `auth_request` gate documented in `console-setup.md` — make sure
-those exist before continuing.
+The bridge re-uses the nginx `auth_request` gate documented in
+`console-setup.md` — make sure it exists before continuing.
 
 ## 1. Verify ttyd is currently the upstream
 
@@ -125,15 +128,15 @@ In an incognito-like state:
 1. Log in at <https://admin.kynguyen.cc/login>.
 2. Open the Console tab → **Terminal**.
 3. The xterm.js view should attach within a second, status dot turns
-   green, prompt is `x106-ops@<host>:~$`. Try `pm2 list`, `df -h`,
-   `whoami` (should print `x106-ops`).
+   green, prompt is `root@<host>:/#`. Try `pm2 list`, `df -h`,
+   `whoami` (should print `root`).
 4. Resize the browser — the shell should reflow without artefacts.
 5. Disconnect by closing the tab; back on the VPS:
 
 ```bash
 journalctl -u x106-terminal-ws -n 20 --no-pager
 # expect: "connect user=<admin> peer=..." then "disconnect ..."
-ps -fu x106-ops | grep bash   # expect no orphaned shells
+ps -ef | grep '[b]ash -l' | grep -v x106-api   # expect no orphaned shells
 ```
 
 ## Rollback
@@ -163,6 +166,9 @@ before step 3 so the rollback is one file restore + reload.
 - JWT verification uses the same `JWT_SECRET` env var as the Django API,
   loaded via systemd `EnvironmentFile=/var/www/api/.env`. Rotating the
   secret invalidates all admin sessions including any open terminals.
-- The shell inherits the `x106-ops` UID, so the sudoers whitelist in
-  `/etc/sudoers.d/x106-ops` (read-only ops only) applies here too —
-  destructive verbs are blocked at the kernel level, not in the UI.
+- The shell runs as **root** (UID 0). There's no sudoers sandbox; any
+  destructive command (`rm -rf`, `systemctl stop`, `apt purge`) runs
+  immediately. The only gate is the `x106_admin` JWT cookie. If you
+  ever want to restore the sandbox, flip the systemd unit back to
+  `User=x106-ops` and re-apply the sudoers whitelist from
+  `console-setup.md`.
