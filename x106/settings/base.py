@@ -125,10 +125,16 @@ X106_ADMIN_COOKIE_MAX_AGE = int(timedelta(hours=8).total_seconds())
 
 # ─── VPS console (apps.console) ───────────────────────────────────────────
 #
-# AI ops assistant drives the `agy` Antigravity CLI via subprocess on the
-# VPS itself (systemd `x106-celery-worker` runs as root, so it can exec
-# /root/.local/bin/agy directly — no SSH, no API key, OAuth lives in the
-# root home dir under ~/.gemini/antigravity-cli/).
+# AI ops assistant runs LLM calls through the Google Gemini API via the
+# official `google-genai` SDK. Shell execution goes through paramiko SSH to
+# a dedicated `x106-ops` user on the same VPS — never via subprocess on the
+# api service itself. GEMINI_API_KEY + all four CONSOLE_SSH_* env vars must
+# be set on prod systemd units before the feature is usable.
+GEMINI_API_KEY = env.str("GEMINI_API_KEY", default="")
+CONSOLE_SSH_HOST = env.str("CONSOLE_SSH_HOST", default="127.0.0.1")
+CONSOLE_SSH_PORT = env.int("CONSOLE_SSH_PORT", default=22)
+CONSOLE_SSH_USER = env.str("CONSOLE_SSH_USER", default="x106-ops")
+CONSOLE_SSH_KEY_PATH = env.str("CONSOLE_SSH_KEY_PATH", default="")
 
 # ─── DRF & SimpleJWT ──────────────────────────────────────────────────────
 
@@ -200,8 +206,12 @@ CELERY_TASK_ACKS_LATE = True
 CELERY_TASK_TRACK_STARTED = True
 CELERY_TIMEZONE = TIME_ZONE
 CELERY_BEAT_SCHEDULE = {
-    "console-cleanup-old-messages": {
-        "task": "apps.console.tasks.cleanup_old_messages",
+    "console-recover-stuck-execs": {
+        "task": "apps.console.tasks.recover_stuck_execs",
+        "schedule": 60.0,
+    },
+    "console-cleanup-old-execs": {
+        "task": "apps.console.tasks.cleanup_old_execs",
         "schedule": 3600.0,
     },
 }
