@@ -308,7 +308,10 @@ class ExecViewSet(viewsets.GenericViewSet):
         except llm_service.LLMConfigError as err:
             return Response({"error": str(err)}, status=status.HTTP_503_SERVICE_UNAVAILABLE)
         except llm_service.LLMTransportError as err:
-            return Response({"error": str(err)}, status=status.HTTP_502_BAD_GATEWAY)
+            # 503 (not 502) — Cloudflare's edge swaps 502 origin responses for
+            # its own HTML "Bad gateway" page, which the admin UI then has to
+            # render as garbage. 503 passes through cleanly.
+            return Response({"error": str(err)}, status=status.HTTP_503_SERVICE_UNAVAILABLE)
         return Response({"summary": result.text})
 
 
