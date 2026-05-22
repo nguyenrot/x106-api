@@ -211,9 +211,17 @@ class MessageRetryView(APIView):
         if msg.status != ConsoleMessage.STATUS_FAILED:
             raise ValidationError({"status": f"message is {msg.status}, can only retry failed"})
 
+        # Bump created_at so the recover_stuck_execs beat task doesn't sweep
+        # this retry as "stale" (its threshold is 5min on the original create
+        # time, and a retry of a 30-minute-old failed message would trip it
+        # the moment we set status back to pending).
         updated = ConsoleMessage.objects.filter(
             pk=msg.pk, status=ConsoleMessage.STATUS_FAILED
-        ).update(status=ConsoleMessage.STATUS_PENDING, error_message="")
+        ).update(
+            status=ConsoleMessage.STATUS_PENDING,
+            error_message="",
+            created_at=timezone.now(),
+        )
         if not updated:
             raise ValidationError({"status": "message status changed; refresh"})
         run_console_chat.delay(msg.pk)
