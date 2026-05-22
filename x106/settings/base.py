@@ -34,6 +34,7 @@ INSTALLED_APPS = [
     "apps.journal",
     "apps.content",
     "apps.ledger",
+    "apps.console",
 ]
 
 MIDDLEWARE = [
@@ -122,6 +123,22 @@ X106_ADMIN_COOKIE = "x106_admin"
 X106_SESSION_COOKIE_MAX_AGE = int(timedelta(days=30).total_seconds())
 X106_ADMIN_COOKIE_MAX_AGE = int(timedelta(hours=8).total_seconds())
 
+# ─── VPS console (apps.console) ───────────────────────────────────────────
+#
+# AI ops assistant runs LLM calls through the OpenCode Zen free-tier gateway
+# (OpenAI-compatible). Shell execution goes through paramiko SSH to a
+# dedicated `x106-ops` user on the same VPS — never via subprocess on the
+# api service itself. All four CONSOLE_* + OPENCODE_ZEN_API_KEY env vars
+# must be set on prod systemd units before the feature is usable.
+OPENCODE_ZEN_API_KEY = env.str("OPENCODE_ZEN_API_KEY", default="")
+OPENCODE_ZEN_BASE_URL = env.str(
+    "OPENCODE_ZEN_BASE_URL", default="https://opencode.ai/zen/v1"
+)
+CONSOLE_SSH_HOST = env.str("CONSOLE_SSH_HOST", default="127.0.0.1")
+CONSOLE_SSH_PORT = env.int("CONSOLE_SSH_PORT", default=22)
+CONSOLE_SSH_USER = env.str("CONSOLE_SSH_USER", default="x106-ops")
+CONSOLE_SSH_KEY_PATH = env.str("CONSOLE_SSH_KEY_PATH", default="")
+
 # ─── DRF & SimpleJWT ──────────────────────────────────────────────────────
 
 REST_FRAMEWORK = {
@@ -191,7 +208,16 @@ CELERY_WORKER_PREFETCH_MULTIPLIER = 1
 CELERY_TASK_ACKS_LATE = True
 CELERY_TASK_TRACK_STARTED = True
 CELERY_TIMEZONE = TIME_ZONE
-CELERY_BEAT_SCHEDULE = {}
+CELERY_BEAT_SCHEDULE = {
+    "console-recover-stuck-execs": {
+        "task": "apps.console.tasks.recover_stuck_execs",
+        "schedule": 60.0,
+    },
+    "console-cleanup-old-execs": {
+        "task": "apps.console.tasks.cleanup_old_execs",
+        "schedule": 3600.0,
+    },
+}
 
 # ─── Logging ──────────────────────────────────────────────────────────────
 
