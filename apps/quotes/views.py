@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import hashlib
-from datetime import date as date_cls
 
 from django.db.models import Q
 from rest_framework import status, viewsets
@@ -9,20 +8,12 @@ from rest_framework.decorators import action
 from rest_framework.exceptions import NotFound, PermissionDenied
 from rest_framework.permissions import AllowAny, IsAuthenticated
 from rest_framework.response import Response
-from rest_framework.views import APIView
 
 from apps.core.permissions import IsAdminToken
 from apps.core.tz import local_today
 
-from .models import Baogia, BaogiaLineItem, Quote, QuoteFavorite
-from .serializers import (
-    BaogiaLineItemSerializer,
-    BaogiaSerializer,
-    QuoteSerializer,
-    UpsertBaogiaSerializer,
-    UpsertLineItemSerializer,
-    UpsertQuoteSerializer,
-)
+from .models import Quote, QuoteFavorite
+from .serializers import QuoteSerializer, UpsertQuoteSerializer
 
 
 def _filter_public_quotes(qs, p):
@@ -203,95 +194,6 @@ class QuoteViewSet(viewsets.ViewSet):
 
         QuoteFavorite.objects.get_or_create(user=request.user, quote=quote)
         return Response({"favorited": True}, status=status.HTTP_201_CREATED)
-
-
-class BaogiaViewSet(viewsets.ViewSet):
-    """/api/v1/quotes/baogia/ — business quotations owned by the caller."""
-
-    permission_classes = [IsAuthenticated]
-    lookup_field = "id"
-
-    def list(self, request):
-        rows = Baogia.objects.filter(user=request.user).order_by("-created_at")
-        return Response(BaogiaSerializer(rows, many=True).data)
-
-    def retrieve(self, request, id=None):
-        bg = Baogia.objects.filter(id=id, user=request.user).first()
-        if not bg:
-            raise NotFound("Không tìm thấy báo giá.")
-        return Response(BaogiaSerializer(bg).data)
-
-    def create(self, request):
-        serializer = UpsertBaogiaSerializer(data=request.data)
-        serializer.is_valid(raise_exception=True)
-        bg = Baogia.objects.create(user=request.user, **serializer.validated_data)
-        return Response(BaogiaSerializer(bg).data, status=status.HTTP_201_CREATED)
-
-    def partial_update(self, request, id=None):
-        bg = Baogia.objects.filter(id=id, user=request.user).first()
-        if not bg:
-            raise NotFound("Không tìm thấy báo giá.")
-        serializer = UpsertBaogiaSerializer(data=request.data, partial=True)
-        serializer.is_valid(raise_exception=True)
-        for k, v in serializer.validated_data.items():
-            setattr(bg, k, v)
-        bg.save()
-        return Response(BaogiaSerializer(bg).data)
-
-    def destroy(self, request, id=None):
-        bg = Baogia.objects.filter(id=id, user=request.user).first()
-        if not bg:
-            raise NotFound("Không tìm thấy báo giá.")
-        bg.delete()
-        return Response(status=status.HTTP_204_NO_CONTENT)
-
-    @action(detail=True, methods=["post"], url_path="items", permission_classes=[IsAuthenticated])
-    def add_item(self, request, id=None):
-        bg = Baogia.objects.filter(id=id, user=request.user).first()
-        if not bg:
-            raise NotFound("Không tìm thấy báo giá.")
-        serializer = UpsertLineItemSerializer(data=request.data)
-        serializer.is_valid(raise_exception=True)
-        item = BaogiaLineItem.objects.create(baogia=bg, **serializer.validated_data)
-        return Response(BaogiaLineItemSerializer(item).data, status=status.HTTP_201_CREATED)
-
-    @action(
-        detail=True,
-        methods=["patch", "delete"],
-        url_path=r"items/(?P<item_id>[^/.]+)",
-        permission_classes=[IsAuthenticated],
-    )
-    def item_detail(self, request, id=None, item_id=None):
-        bg = Baogia.objects.filter(id=id, user=request.user).first()
-        if not bg:
-            raise NotFound("Không tìm thấy báo giá.")
-        item = BaogiaLineItem.objects.filter(id=item_id, baogia=bg).first()
-        if not item:
-            raise NotFound("Không tìm thấy line item.")
-
-        if request.method.upper() == "DELETE":
-            item.delete()
-            return Response(status=status.HTTP_204_NO_CONTENT)
-
-        serializer = UpsertLineItemSerializer(data=request.data, partial=True)
-        serializer.is_valid(raise_exception=True)
-        for k, v in serializer.validated_data.items():
-            setattr(item, k, v)
-        item.save()
-        return Response(BaogiaLineItemSerializer(item).data)
-
-
-class PublicBaogiaView(APIView):
-    """GET /api/v1/quotes/baogia/public/{share_token} — read-only print view."""
-
-    permission_classes = [AllowAny]
-    authentication_classes: list = []
-
-    def get(self, _request, share_token: str):
-        bg = Baogia.objects.filter(share_token=share_token).first()
-        if not bg:
-            return Response({"error": "not found"}, status=status.HTTP_404_NOT_FOUND)
-        return Response(BaogiaSerializer(bg).data)
 
 
 # ─── Admin endpoints ────────────────────────────────────────────────────────

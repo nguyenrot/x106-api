@@ -1,10 +1,8 @@
 from __future__ import annotations
 
-from decimal import Decimal
-
 from rest_framework import serializers
 
-from .models import Baogia, BaogiaLineItem, Quote, QuoteFavorite
+from .models import Quote, QuoteFavorite
 
 
 def _normalize_tags(tags: list[str]) -> list[str]:
@@ -82,60 +80,3 @@ class UpsertQuoteSerializer(serializers.Serializer):
 
     def validate_tags(self, value: list[str]) -> list[str]:
         return _normalize_tags(value)
-
-
-class BaogiaLineItemSerializer(serializers.ModelSerializer):
-    line_total = serializers.SerializerMethodField()
-
-    class Meta:
-        model = BaogiaLineItem
-        fields = ["id", "description", "quantity", "unit_price", "sort_order", "line_total"]
-        read_only_fields = ["id", "line_total"]
-
-    def get_line_total(self, obj) -> str:
-        total = Decimal(obj.quantity) * Decimal(obj.unit_price)
-        return f"{total:.2f}"
-
-
-class BaogiaSerializer(serializers.ModelSerializer):
-    items = BaogiaLineItemSerializer(many=True, read_only=True)
-    total = serializers.SerializerMethodField()
-
-    class Meta:
-        model = Baogia
-        fields = [
-            "id",
-            "share_token",
-            "client_name",
-            "client_company",
-            "title",
-            "notes",
-            "currency",
-            "valid_until",
-            "issued_at",
-            "created_at",
-            "updated_at",
-            "items",
-            "total",
-        ]
-        read_only_fields = ["id", "share_token", "issued_at", "created_at", "updated_at", "items", "total"]
-
-    def get_total(self, obj) -> str:
-        total = sum((Decimal(i.quantity) * Decimal(i.unit_price) for i in obj.items.all()), Decimal(0))
-        return f"{total:.2f}"
-
-
-class UpsertBaogiaSerializer(serializers.Serializer):
-    client_name = serializers.CharField(max_length=200)
-    client_company = serializers.CharField(max_length=200, required=False, allow_blank=True, default="")
-    title = serializers.CharField(max_length=200)
-    notes = serializers.CharField(required=False, allow_blank=True, default="")
-    currency = serializers.CharField(max_length=8, required=False, default="VND")
-    valid_until = serializers.DateField(required=False, allow_null=True)
-
-
-class UpsertLineItemSerializer(serializers.Serializer):
-    description = serializers.CharField(max_length=500)
-    quantity = serializers.DecimalField(max_digits=12, decimal_places=2, default=Decimal(1))
-    unit_price = serializers.DecimalField(max_digits=14, decimal_places=2, default=Decimal(0))
-    sort_order = serializers.IntegerField(default=0)
