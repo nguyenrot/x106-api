@@ -1,4 +1,9 @@
-"""Quote + QuoteFavorite — personal quote library shared via quotes.kynguyen.cc."""
+"""Quote + QuoteFavorite — personal quote library shared via quotes.kynguyen.cc.
+
+`body` is a bilingual dict — `{"en": "...", "vi": "..."}`. The `language`
+field marks the *primary/original* language (used for filtering, and as the
+fallback when the user has selected a UI language with no matching translation).
+"""
 
 from __future__ import annotations
 
@@ -16,6 +21,10 @@ def _new_share_token() -> str:
     return token_urlsafe(24)
 
 
+def _empty_body() -> dict:
+    return {"en": "", "vi": ""}
+
+
 class Quote(models.Model):
     id = models.CharField(primary_key=True, max_length=36, default=new_id, editable=False)
     user = models.ForeignKey(
@@ -27,7 +36,7 @@ class Quote(models.Model):
         blank=True,
         related_name="quotes",
     )
-    body = models.TextField()
+    body = models.JSONField(default=_empty_body)
     author = models.CharField(max_length=200, blank=True, default="")
     source = models.CharField(max_length=500, blank=True, default="")
     tags = models.JSONField(default=list, blank=True)

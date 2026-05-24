@@ -19,9 +19,26 @@ def _normalize_tags(tags: list[str]) -> list[str]:
     return out[:12]
 
 
+def _normalize_body(value) -> dict:
+    """Coerce any of (str, {en,vi} dict, None) into a canonical {en, vi} dict.
+    At least one of en/vi must be non-empty — caller raises if not."""
+
+    if value is None:
+        return {"en": "", "vi": ""}
+    if isinstance(value, str):
+        return {"en": "", "vi": value.strip()}
+    if isinstance(value, dict):
+        return {
+            "en": (value.get("en") or "").strip(),
+            "vi": (value.get("vi") or "").strip(),
+        }
+    raise serializers.ValidationError("body must be a string or {en, vi} object.")
+
+
 class QuoteSerializer(serializers.ModelSerializer):
     user_id = serializers.CharField(read_only=True, allow_null=True)
     favorited = serializers.SerializerMethodField()
+    body = serializers.SerializerMethodField()
 
     class Meta:
         model = Quote
@@ -50,6 +67,9 @@ class QuoteSerializer(serializers.ModelSerializer):
             "updated_at",
         ]
 
+    def get_body(self, obj) -> dict:
+        return _normalize_body(obj.body)
+
     def get_favorited(self, obj) -> bool:
         request = self.context.get("request")
         if not request or not request.user or not request.user.is_authenticated:
@@ -61,7 +81,7 @@ class QuoteSerializer(serializers.ModelSerializer):
 
 
 class UpsertQuoteSerializer(serializers.Serializer):
-    body = serializers.CharField(max_length=4000)
+    body = serializers.JSONField()
     author = serializers.CharField(max_length=200, required=False, allow_blank=True, default="")
     source = serializers.CharField(max_length=500, required=False, allow_blank=True, default="")
     tags = serializers.ListField(
@@ -72,11 +92,11 @@ class UpsertQuoteSerializer(serializers.Serializer):
     language = serializers.ChoiceField(choices=["vi", "en"], default="vi")
     is_public = serializers.BooleanField(required=False, default=False)
 
-    def validate_body(self, value: str) -> str:
-        v = value.strip()
-        if not v:
-            raise serializers.ValidationError("Quote không được để trống.")
-        return v
+    def validate_body(self, value) -> dict:
+        body = _normalize_body(value)
+        if not body["en"] and not body["vi"]:
+            raise serializers.ValidationError("Quote không được để trống (cần ít nhất 1 ngôn ngữ).")
+        return body
 
     def validate_tags(self, value: list[str]) -> list[str]:
         return _normalize_tags(value)
