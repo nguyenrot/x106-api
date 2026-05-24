@@ -1,0 +1,391 @@
+from __future__ import annotations
+
+import hashlib
+from datetime import date as date_cls
+
+from django.db.models import Q
+from rest_framework import status, viewsets
+from rest_framework.decorators import action
+from rest_framework.exceptions import NotFound, PermissionDenied
+from rest_framework.permissions import AllowAny, IsAuthenticated
+from rest_framework.response import Response
+from rest_framework.views import APIView
+
+from apps.core.permissions import IsAdminToken
+from apps.core.tz import local_today
+
+from .models import Baogia, BaogiaLineItem, Quote, QuoteFavorite
+from .serializers import (
+    BaogiaLineItemSerializer,
+    BaogiaSerializer,
+    QuoteSerializer,
+    UpsertBaogiaSerializer,
+    UpsertLineItemSerializer,
+    UpsertQuoteSerializer,
+)
+
+
+def _filter_public_quotes(qs, p):
+    """Apply ?author=&tag=&lang=&q= filters to a curated-public queryset."""
+    author = (p.get("author") or "").strip()
+    if author:
+        qs = qs.filter(author__icontains=author)
+
+    tag = (p.get("tag") or "").strip().lower()
+    if tag:
+        qs = qs.filter(tags__contains=[tag])
+
+    lang = (p.get("lang") or "").strip().lower()
+    if lang in ("vi", "en"):
+        qs = qs.filter(language=lang)
+
+    q = (p.get("q") or "").strip()
+    if q:
+        qs = qs.filter(Q(body__icontains=q) | Q(author__icontains=q) | Q(source__icontains=q))
+
+    return qs
+
+
+def _favorited_ids(user, queryset_ids) -> set[str]:
+    if not user or not user.is_authenticated:
+        return set()
+    return set(
+        QuoteFavorite.objects
+        .filter(user=user, quote_id__in=list(queryset_ids))
+        .values_list("quote_id", flat=True)
+    )
+
+
+class QuoteViewSet(viewsets.ViewSet):
+    """/api/v1/quotes/ — public browse + user-authored highlights.
+
+    GET    /quotes/featured        -> quote of the day (deterministic, VN tz)   public
+    GET    /quotes/                -> list curated public quotes, filters       public
+    GET    /quotes/{id}            -> quote detail                              public
+    POST   /quotes/                -> user submit (defaults to private)         auth
+    GET    /quotes/me/highlights   -> caller's own quotes (public+private)      auth
+    PATCH  /quotes/me/highlights/{id} | DELETE                                  auth
+    GET    /quotes/me/favorites    -> caller's saved favorites                  auth
+    POST   /quotes/me/favorites/{quote_id} | DELETE                             auth
+    """
+
+    permission_classes = [AllowAny]
+    lookup_field = "id"
+
+    def list(self, request):
+        qs = Quote.objects.filter(is_curated=True, is_public=True)
+        qs = _filter_public_quotes(qs, request.query_params)
+        qs = qs.order_by("-created_at")[:200]
+
+        ids = [q.id for q in qs]
+        fav_ids = _favorited_ids(request.user, ids)
+        ctx = {"request": request, "favorited_ids": fav_ids}
+        return Response(QuoteSerializer(qs, many=True, context=ctx).data)
+
+    def retrieve(self, request, id=None):
+        quote = Quote.objects.filter(id=id).first()
+        if not quote:
+            raise NotFound("Không tìm thấy quote.")
+
+        # Visibility: curated public ALWAYS readable; private only to owner.
+        if not (quote.is_curated and quote.is_public):
+            if not request.user or not request.user.is_authenticated:
+                raise NotFound("Không tìm thấy quote.")
+            if quote.user_id != request.user.id:
+                raise NotFound("Không tìm thấy quote.")
+
+        fav_ids = _favorited_ids(request.user, [quote.id])
+        ctx = {"request": request, "favorited_ids": fav_ids}
+        return Response(QuoteSerializer(quote, context=ctx).data)
+
+    def create(self, request):
+        if not request.user or not request.user.is_authenticated:
+            raise PermissionDenied("Đăng nhập để submit quote.")
+        serializer = UpsertQuoteSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        v = serializer.validated_data
+
+        quote = Quote.objects.create(
+            user=request.user,
+            body=v["body"],
+            author=v.get("author") or "",
+            source=v.get("source") or "",
+            tags=v.get("tags") or [],
+            language=v.get("language") or "vi",
+            is_public=bool(v.get("is_public")),
+            is_curated=False,
+            is_featured=False,
+        )
+        return Response(
+            QuoteSerializer(quote, context={"request": request}).data,
+            status=status.HTTP_201_CREATED,
+        )
+
+    @action(detail=False, methods=["get"], url_path="featured", permission_classes=[AllowAny])
+    def featured(self, request):
+        """Quote of the day — deterministic pick over featured curated quotes.
+
+        Falls back to most-recent curated quote if no featured ones exist."""
+
+        pool_qs = Quote.objects.filter(is_curated=True, is_public=True, is_featured=True)
+        pool_ids = list(pool_qs.values_list("id", flat=True).order_by("id"))
+
+        if not pool_ids:
+            pool_qs = Quote.objects.filter(is_curated=True, is_public=True)
+            pool_ids = list(pool_qs.values_list("id", flat=True).order_by("id"))
+
+        if not pool_ids:
+            return Response(None)
+
+        today = local_today().isoformat()
+        digest = hashlib.sha256(today.encode("utf-8")).hexdigest()
+        idx = int(digest, 16) % len(pool_ids)
+        chosen_id = pool_ids[idx]
+        quote = Quote.objects.get(id=chosen_id)
+
+        fav_ids = _favorited_ids(request.user, [quote.id])
+        ctx = {"request": request, "favorited_ids": fav_ids}
+        return Response(QuoteSerializer(quote, context=ctx).data)
+
+    @action(detail=False, methods=["get"], url_path="me/highlights", permission_classes=[IsAuthenticated])
+    def my_highlights(self, request):
+        qs = Quote.objects.filter(user=request.user).order_by("-created_at")
+        return Response(QuoteSerializer(qs, many=True, context={"request": request}).data)
+
+    @action(
+        detail=False,
+        methods=["patch", "delete"],
+        url_path=r"me/highlights/(?P<quote_id>[^/.]+)",
+        permission_classes=[IsAuthenticated],
+    )
+    def my_highlight_item(self, request, quote_id: str):
+        quote = Quote.objects.filter(id=quote_id, user=request.user).first()
+        if not quote:
+            raise NotFound("Không tìm thấy highlight.")
+
+        if request.method.upper() == "DELETE":
+            quote.delete()
+            return Response(status=status.HTTP_204_NO_CONTENT)
+
+        serializer = UpsertQuoteSerializer(data=request.data, partial=True)
+        serializer.is_valid(raise_exception=True)
+        for k, v in serializer.validated_data.items():
+            setattr(quote, k, v)
+        quote.save()
+        return Response(QuoteSerializer(quote, context={"request": request}).data)
+
+    @action(detail=False, methods=["get"], url_path="me/favorites", permission_classes=[IsAuthenticated])
+    def my_favorites(self, request):
+        favs = (
+            QuoteFavorite.objects
+            .filter(user=request.user)
+            .select_related("quote")
+            .order_by("-created_at")
+        )
+        quotes = [f.quote for f in favs]
+        ctx = {"request": request, "favorited_ids": {q.id for q in quotes}}
+        return Response(QuoteSerializer(quotes, many=True, context=ctx).data)
+
+    @action(
+        detail=False,
+        methods=["post", "delete"],
+        url_path=r"me/favorites/(?P<quote_id>[^/.]+)",
+        permission_classes=[IsAuthenticated],
+    )
+    def toggle_favorite(self, request, quote_id: str):
+        quote = Quote.objects.filter(id=quote_id).first()
+        if not quote:
+            raise NotFound("Không tìm thấy quote.")
+
+        if request.method.upper() == "DELETE":
+            QuoteFavorite.objects.filter(user=request.user, quote=quote).delete()
+            return Response(status=status.HTTP_204_NO_CONTENT)
+
+        QuoteFavorite.objects.get_or_create(user=request.user, quote=quote)
+        return Response({"favorited": True}, status=status.HTTP_201_CREATED)
+
+
+class BaogiaViewSet(viewsets.ViewSet):
+    """/api/v1/quotes/baogia/ — business quotations owned by the caller."""
+
+    permission_classes = [IsAuthenticated]
+    lookup_field = "id"
+
+    def list(self, request):
+        rows = Baogia.objects.filter(user=request.user).order_by("-created_at")
+        return Response(BaogiaSerializer(rows, many=True).data)
+
+    def retrieve(self, request, id=None):
+        bg = Baogia.objects.filter(id=id, user=request.user).first()
+        if not bg:
+            raise NotFound("Không tìm thấy báo giá.")
+        return Response(BaogiaSerializer(bg).data)
+
+    def create(self, request):
+        serializer = UpsertBaogiaSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        bg = Baogia.objects.create(user=request.user, **serializer.validated_data)
+        return Response(BaogiaSerializer(bg).data, status=status.HTTP_201_CREATED)
+
+    def partial_update(self, request, id=None):
+        bg = Baogia.objects.filter(id=id, user=request.user).first()
+        if not bg:
+            raise NotFound("Không tìm thấy báo giá.")
+        serializer = UpsertBaogiaSerializer(data=request.data, partial=True)
+        serializer.is_valid(raise_exception=True)
+        for k, v in serializer.validated_data.items():
+            setattr(bg, k, v)
+        bg.save()
+        return Response(BaogiaSerializer(bg).data)
+
+    def destroy(self, request, id=None):
+        bg = Baogia.objects.filter(id=id, user=request.user).first()
+        if not bg:
+            raise NotFound("Không tìm thấy báo giá.")
+        bg.delete()
+        return Response(status=status.HTTP_204_NO_CONTENT)
+
+    @action(detail=True, methods=["post"], url_path="items", permission_classes=[IsAuthenticated])
+    def add_item(self, request, id=None):
+        bg = Baogia.objects.filter(id=id, user=request.user).first()
+        if not bg:
+            raise NotFound("Không tìm thấy báo giá.")
+        serializer = UpsertLineItemSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        item = BaogiaLineItem.objects.create(baogia=bg, **serializer.validated_data)
+        return Response(BaogiaLineItemSerializer(item).data, status=status.HTTP_201_CREATED)
+
+    @action(
+        detail=True,
+        methods=["patch", "delete"],
+        url_path=r"items/(?P<item_id>[^/.]+)",
+        permission_classes=[IsAuthenticated],
+    )
+    def item_detail(self, request, id=None, item_id=None):
+        bg = Baogia.objects.filter(id=id, user=request.user).first()
+        if not bg:
+            raise NotFound("Không tìm thấy báo giá.")
+        item = BaogiaLineItem.objects.filter(id=item_id, baogia=bg).first()
+        if not item:
+            raise NotFound("Không tìm thấy line item.")
+
+        if request.method.upper() == "DELETE":
+            item.delete()
+            return Response(status=status.HTTP_204_NO_CONTENT)
+
+        serializer = UpsertLineItemSerializer(data=request.data, partial=True)
+        serializer.is_valid(raise_exception=True)
+        for k, v in serializer.validated_data.items():
+            setattr(item, k, v)
+        item.save()
+        return Response(BaogiaLineItemSerializer(item).data)
+
+
+class PublicBaogiaView(APIView):
+    """GET /api/v1/quotes/baogia/public/{share_token} — read-only print view."""
+
+    permission_classes = [AllowAny]
+    authentication_classes: list = []
+
+    def get(self, _request, share_token: str):
+        bg = Baogia.objects.filter(share_token=share_token).first()
+        if not bg:
+            return Response({"error": "not found"}, status=status.HTTP_404_NOT_FOUND)
+        return Response(BaogiaSerializer(bg).data)
+
+
+# ─── Admin endpoints ────────────────────────────────────────────────────────
+
+class AdminQuoteViewSet(viewsets.ViewSet):
+    """/api/v1/admin/quotes/ — curation surface for admin.kynguyen.cc."""
+
+    permission_classes = [IsAdminToken]
+    lookup_field = "id"
+
+    def list(self, request):
+        p = request.query_params
+        scope = (p.get("scope") or "all").strip()  # all | pending | curated | featured
+        qs = Quote.objects.all()
+        if scope == "pending":
+            qs = qs.filter(is_curated=False)
+        elif scope == "curated":
+            qs = qs.filter(is_curated=True)
+        elif scope == "featured":
+            qs = qs.filter(is_featured=True)
+        qs = _filter_public_quotes(qs, p).order_by("-created_at")[:500]
+        return Response(QuoteSerializer(qs, many=True).data)
+
+    def retrieve(self, request, id=None):
+        q = Quote.objects.filter(id=id).first()
+        if not q:
+            raise NotFound()
+        return Response(QuoteSerializer(q).data)
+
+    def create(self, request):
+        """Admin creates a curated quote directly (e.g. famous quotes library)."""
+        serializer = UpsertQuoteSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        v = serializer.validated_data
+        q = Quote.objects.create(
+            user=None,  # admin-authored ⇒ no user owner
+            body=v["body"],
+            author=v.get("author") or "",
+            source=v.get("source") or "",
+            tags=v.get("tags") or [],
+            language=v.get("language") or "vi",
+            is_public=True,
+            is_curated=True,
+            is_featured=False,
+        )
+        return Response(QuoteSerializer(q).data, status=status.HTTP_201_CREATED)
+
+    def partial_update(self, request, id=None):
+        q = Quote.objects.filter(id=id).first()
+        if not q:
+            raise NotFound()
+        serializer = UpsertQuoteSerializer(data=request.data, partial=True)
+        serializer.is_valid(raise_exception=True)
+        for k, v in serializer.validated_data.items():
+            setattr(q, k, v)
+        q.save()
+        return Response(QuoteSerializer(q).data)
+
+    def destroy(self, request, id=None):
+        q = Quote.objects.filter(id=id).first()
+        if not q:
+            raise NotFound()
+        q.delete()
+        return Response(status=status.HTTP_204_NO_CONTENT)
+
+    @action(detail=True, methods=["post"], url_path="curate")
+    def curate(self, request, id=None):
+        q = Quote.objects.filter(id=id).first()
+        if not q:
+            raise NotFound()
+        q.is_curated = True
+        q.is_public = True
+        q.save(update_fields=["is_curated", "is_public", "updated_at"])
+        return Response(QuoteSerializer(q).data)
+
+    @action(detail=True, methods=["post"], url_path="uncurate")
+    def uncurate(self, request, id=None):
+        q = Quote.objects.filter(id=id).first()
+        if not q:
+            raise NotFound()
+        q.is_curated = False
+        q.is_featured = False
+        q.save(update_fields=["is_curated", "is_featured", "updated_at"])
+        return Response(QuoteSerializer(q).data)
+
+    @action(detail=True, methods=["post"], url_path="feature")
+    def feature(self, request, id=None):
+        q = Quote.objects.filter(id=id).first()
+        if not q:
+            raise NotFound()
+        q.is_featured = not q.is_featured
+        # Featuring forces curation so the quote-of-the-day pool is consistent.
+        if q.is_featured:
+            q.is_curated = True
+            q.is_public = True
+        q.save(update_fields=["is_featured", "is_curated", "is_public", "updated_at"])
+        return Response(QuoteSerializer(q).data)

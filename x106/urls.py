@@ -14,10 +14,12 @@ urlpatterns = [
     path("api/v1/users/", include("apps.accounts.users_urls")),
     path("api/v1/journal/", include("apps.journal.urls")),
     path("api/v1/ledger/", include("apps.ledger.urls")),
+    path("api/v1/quotes/", include("apps.quotes.urls")),
     path("api/v1/", include("apps.content.urls")),
     path("api/v1/admin/", include("apps.accounts.admin_urls")),
     path("api/v1/admin/content/", include("apps.content.admin_urls")),
     path("api/v1/admin/console/", include("apps.console.urls")),
+    path("api/v1/admin/quotes/", include("apps.quotes.admin_urls")),
     path("api/schema/", SpectacularAPIView.as_view(), name="schema"),
     path("api/docs/", SpectacularSwaggerView.as_view(url_name="schema"), name="docs"),
 ]
