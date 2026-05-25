@@ -143,7 +143,13 @@ class QuoteFavorite(models.Model):
 
 
 class QuoteAgentRun(models.Model):
-    """One row per daily-agent invocation. Drives /admin/quotes/agent-status."""
+    """One row per daily-agent invocation. Drives /admin/quotes/agent-status
+    + the admin UI's agent-runs log viewer.
+
+    Logs everything observable per run: the prompt the LLM saw, the raw text
+    it spat back, the parsed JSON, and what the local validator said. This is
+    a write-once audit trail — no UPDATE after the agent finishes a run.
+    """
 
     STATUS_CHOICES = [
         ("started", "started"),
@@ -169,6 +175,14 @@ class QuoteAgentRun(models.Model):
     )
     error_message = models.TextField(blank=True, default="")
     extras = models.JSONField(default=dict, blank=True)
+
+    # Full audit trail — agent writes these once per run, admin UI reads them.
+    prompt = models.TextField(blank=True, default="")
+    agy_response_raw = models.TextField(blank=True, default="")
+    agy_response_parsed = models.JSONField(null=True, blank=True)
+    validation_error = models.TextField(blank=True, default="")
+    duration_ms = models.IntegerField(null=True, blank=True)
+    agy_duration_ms = models.IntegerField(null=True, blank=True)
 
     class Meta:
         db_table = "quote_agent_runs"

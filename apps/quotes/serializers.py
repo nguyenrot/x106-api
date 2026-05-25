@@ -117,7 +117,10 @@ class AdminUpsertQuoteSerializer(UpsertQuoteSerializer):
 
 
 class AgentRunSerializer(serializers.ModelSerializer):
-    """Used by both GET /agent-status (read) and POST /agent-runs (write)."""
+    """Full serializer — POST /agent-runs (write) and GET detail (read).
+
+    For list views use `AgentRunListSerializer` instead — it skips the heavy
+    text columns to keep the response small."""
 
     quote_id = serializers.CharField(required=False, allow_null=True, allow_blank=True)
 
@@ -133,6 +136,12 @@ class AgentRunSerializer(serializers.ModelSerializer):
             "quote_id",
             "error_message",
             "extras",
+            "prompt",
+            "agy_response_raw",
+            "agy_response_parsed",
+            "validation_error",
+            "duration_ms",
+            "agy_duration_ms",
         ]
         read_only_fields = ["id", "started_at"]
 
@@ -151,3 +160,34 @@ class AgentRunSerializer(serializers.ModelSerializer):
         if quote_id:
             validated_data["quote_id"] = quote_id
         return QuoteAgentRun.objects.create(**validated_data)
+
+
+class AgentRunListSerializer(serializers.ModelSerializer):
+    """Lightweight version for the list view — omits prompt/response text."""
+
+    quote_id = serializers.CharField(allow_null=True)
+    prompt_length = serializers.SerializerMethodField()
+    response_length = serializers.SerializerMethodField()
+
+    class Meta:
+        model = QuoteAgentRun
+        fields = [
+            "id",
+            "service_name",
+            "started_at",
+            "ended_at",
+            "status",
+            "theme_slug",
+            "quote_id",
+            "duration_ms",
+            "agy_duration_ms",
+            "prompt_length",
+            "response_length",
+            "error_message",
+        ]
+
+    def get_prompt_length(self, obj) -> int:
+        return len(obj.prompt or "")
+
+    def get_response_length(self, obj) -> int:
+        return len(obj.agy_response_raw or "")

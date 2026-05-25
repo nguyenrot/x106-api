@@ -20,6 +20,7 @@ from apps.core.tz import local_today
 from .models import Quote, QuoteAgentRun, QuoteFavorite, compute_dedup_hash
 from .serializers import (
     AdminUpsertQuoteSerializer,
+    AgentRunListSerializer,
     AgentRunSerializer,
     QuoteSerializer,
     UpsertQuoteSerializer,
@@ -385,16 +386,55 @@ class AdminQuoteViewSet(viewsets.ViewSet):
             }
         )
 
-    @action(detail=False, methods=["post"], url_path="agent-runs")
-    def create_agent_run(self, request):
-        """Agent records the outcome of each invocation here."""
-        # If service-token caller, default service_name from token name.
-        default_service = (
-            request.user.name if isinstance(request.user, ServiceUser) else "quotes-agent"
-        )
-        serializer = AgentRunSerializer(
-            data=request.data, context={"default_service": default_service}
-        )
-        serializer.is_valid(raise_exception=True)
-        run = serializer.save()
-        return Response(AgentRunSerializer(run).data, status=status.HTTP_201_CREATED)
+    @action(detail=False, methods=["get", "post"], url_path="agent-runs")
+    def agent_runs(self, request):
+        """GET = list (paginated, ?status=&?service=&?limit=&?offset=);
+        POST = agent records the outcome of an invocation."""
+        if request.method.upper() == "POST":
+            default_service = (
+                request.user.name if isinstance(request.user, ServiceUser) else "quotes-agent"
+            )
+            serializer = AgentRunSerializer(
+                data=request.data, context={"default_service": default_service}
+            )
+            serializer.is_valid(raise_exception=True)
+            run = serializer.save()
+            return Response(AgentRunSerializer(run).data, status=status.HTTP_201_CREATED)
+
+        # GET — list
+        p = request.query_params
+        qs = QuoteAgentRun.objects.all().order_by("-started_at")
+        if (svc := (p.get("service") or "").strip()):
+            qs = qs.filter(service_name=svc)
+        if (st := (p.get("status") or "").strip()):
+            qs = qs.filter(status=st)
+
+        total = qs.count()
+        try:
+            limit = max(1, min(200, int(p.get("limit") or 50)))
+        except ValueError:
+            limit = 50
+        try:
+            offset = max(0, int(p.get("offset") or 0))
+        except ValueError:
+            offset = 0
+
+        items = list(qs[offset : offset + limit])
+        return Response({
+            "total": total,
+            "limit": limit,
+            "offset": offset,
+            "items": AgentRunListSerializer(items, many=True).data,
+        })
+
+    @action(
+        detail=False,
+        methods=["get"],
+        url_path=r"agent-runs/(?P<run_id>[^/.]+)",
+    )
+    def agent_run_detail(self, request, run_id: str):
+        """Full row including prompt + response text for the admin trace viewer."""
+        run = QuoteAgentRun.objects.filter(id=run_id).first()
+        if not run:
+            raise NotFound("Agent run không tồn tại.")
+        return Response(AgentRunSerializer(run).data)
