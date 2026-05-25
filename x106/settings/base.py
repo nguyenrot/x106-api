@@ -4,6 +4,7 @@ from datetime import timedelta
 from pathlib import Path
 
 import environ
+from celery.schedules import crontab
 
 BASE_DIR = Path(__file__).resolve().parent.parent.parent
 
@@ -239,6 +240,12 @@ CELERY_BEAT_SCHEDULE = {
     "console-cleanup-old-execs": {
         "task": "apps.console.tasks.cleanup_old_execs",
         "schedule": 3600.0,
+    },
+    # 23:50 giờ Việt Nam — auto-add một record chi 200.000đ cho mọi
+    # LedgerAccount chưa có khoản chi nào trong ngày.
+    "ledger-auto-expense-no-spending": {
+        "task": "apps.ledger.tasks.auto_expense_for_missing_days",
+        "schedule": crontab(hour=23, minute=50),
     },
 }
 
