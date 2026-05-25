@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import hashlib
+import shutil
+import subprocess
 from datetime import timedelta
 
 from django.db import IntegrityError
@@ -438,3 +440,61 @@ class AdminQuoteViewSet(viewsets.ViewSet):
         if not run:
             raise NotFound("Agent run không tồn tại.")
         return Response(AgentRunSerializer(run).data)
+
+    @action(detail=False, methods=["post"], url_path="agent-runs/trigger")
+    def agent_runs_trigger(self, request):
+        """Fire the daily quotes agent ad-hoc (admin only).
+
+        Calls `systemctl start --no-block x106-quotes-agent.service`. The unit is
+        oneshot so a stale start while one is already running is queued by
+        systemd. Returns 202 immediately; the agent records its own row in
+        `quote_agent_runs` when it finishes (usually 30s–5min later).
+        """
+        # Service tokens shouldn't be able to trigger themselves.
+        if isinstance(request.user, ServiceUser):
+            raise PermissionDenied("Trigger chỉ dành cho admin.")
+
+        # Cooldown: block if the most recent run started <30s ago to prevent
+        # accidental double-clicks queuing multiple runs.
+        recent = (
+            QuoteAgentRun.objects
+            .filter(service_name="quotes-agent")
+            .order_by("-started_at")
+            .first()
+        )
+        if recent and recent.started_at >= timezone.now() - timedelta(seconds=30):
+            return Response(
+                {"detail": "Vừa chạy xong, đợi 30s rồi thử lại."},
+                status=status.HTTP_429_TOO_MANY_REQUESTS,
+            )
+
+        systemctl = shutil.which("systemctl")
+        if not systemctl:
+            return Response(
+                {"detail": "systemctl không tồn tại (dev env). Trigger chỉ chạy trên VPS."},
+                status=status.HTTP_503_SERVICE_UNAVAILABLE,
+            )
+
+        try:
+            subprocess.run(
+                [systemctl, "start", "--no-block", "x106-quotes-agent.service"],
+                check=True,
+                capture_output=True,
+                timeout=10,
+            )
+        except subprocess.CalledProcessError as exc:
+            stderr = (exc.stderr or b"").decode("utf-8", "replace").strip()
+            return Response(
+                {"detail": f"systemctl start failed: {stderr or exc.returncode}"},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            )
+        except subprocess.TimeoutExpired:
+            return Response(
+                {"detail": "systemctl start timed out."},
+                status=status.HTTP_504_GATEWAY_TIMEOUT,
+            )
+
+        return Response(
+            {"detail": "Agent đã được kích hoạt — kết quả sẽ xuất hiện trong vài phút."},
+            status=status.HTTP_202_ACCEPTED,
+        )
