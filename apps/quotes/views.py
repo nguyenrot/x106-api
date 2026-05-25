@@ -1,19 +1,29 @@
 from __future__ import annotations
 
 import hashlib
+from datetime import timedelta
 
+from django.db import IntegrityError
 from django.db.models import Q
+from django.utils import timezone
 from rest_framework import status, viewsets
 from rest_framework.decorators import action
 from rest_framework.exceptions import NotFound, PermissionDenied
 from rest_framework.permissions import AllowAny, IsAuthenticated
 from rest_framework.response import Response
 
-from apps.core.permissions import IsAdminToken
+from apps.accounts.auth import JWTCookieAuthentication
+from apps.core.auth import ServiceTokenAuthentication, ServiceUser
+from apps.core.permissions import IsAdminOrAllowedService
 from apps.core.tz import local_today
 
-from .models import Quote, QuoteFavorite
-from .serializers import QuoteSerializer, UpsertQuoteSerializer
+from .models import Quote, QuoteAgentRun, QuoteFavorite, compute_dedup_hash
+from .serializers import (
+    AdminUpsertQuoteSerializer,
+    AgentRunSerializer,
+    QuoteSerializer,
+    UpsertQuoteSerializer,
+)
 
 
 def _filter_public_quotes(qs, p):
@@ -199,9 +209,17 @@ class QuoteViewSet(viewsets.ViewSet):
 # ─── Admin endpoints ────────────────────────────────────────────────────────
 
 class AdminQuoteViewSet(viewsets.ViewSet):
-    """/api/v1/admin/quotes/ — curation surface for admin.kynguyen.cc."""
+    """/api/v1/admin/quotes/ — curation surface for admin.kynguyen.cc.
 
-    permission_classes = [IsAdminToken]
+    Accepts EITHER a human-admin JWT (x106_admin cookie / Bearer with
+    `role:admin`) OR a service token in the `X-Service-Token` header whose
+    name is in `allowed_services`. The daily quotes agent uses the service
+    token path.
+    """
+
+    authentication_classes = [JWTCookieAuthentication, ServiceTokenAuthentication]
+    permission_classes = [IsAdminOrAllowedService]
+    allowed_services = ["quotes-agent"]
     lookup_field = "id"
 
     def list(self, request):
@@ -224,28 +242,63 @@ class AdminQuoteViewSet(viewsets.ViewSet):
         return Response(QuoteSerializer(q).data)
 
     def create(self, request):
-        """Admin creates a curated quote directly (e.g. famous quotes library)."""
-        serializer = UpsertQuoteSerializer(data=request.data)
+        """Admin / service token creates a curated quote directly.
+
+        Accepts is_curated / is_public / is_featured in the payload (defaults
+        to a fully-published quote). Duplicate dedup_hash → 409 + existing id.
+        """
+        serializer = AdminUpsertQuoteSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
         v = serializer.validated_data
-        q = Quote.objects.create(
-            user=None,  # admin-authored ⇒ no user owner
-            body=v["body"],
-            author=v.get("author") or "",
-            source=v.get("source") or "",
-            tags=v.get("tags") or [],
-            language=v.get("language") or "vi",
-            is_public=True,
-            is_curated=True,
-            is_featured=False,
-        )
+
+        body = v["body"]
+        author = v.get("author") or ""
+        dedup = compute_dedup_hash(body, author)
+        if dedup:
+            existing = Quote.objects.filter(dedup_hash=dedup).first()
+            if existing:
+                return Response(
+                    {
+                        "detail": "duplicate",
+                        "existing_id": existing.id,
+                        "quote": QuoteSerializer(existing).data,
+                    },
+                    status=status.HTTP_409_CONFLICT,
+                )
+
+        try:
+            q = Quote.objects.create(
+                user=None,
+                body=body,
+                author=author,
+                source=v.get("source") or "",
+                tags=v.get("tags") or [],
+                language=v.get("language") or "en",
+                is_public=v.get("is_public", True),
+                is_curated=v.get("is_curated", True),
+                is_featured=v.get("is_featured", False),
+            )
+        except IntegrityError:
+            # Race: another writer inserted the same hash between our SELECT
+            # and INSERT. Refetch and return the winner.
+            existing = Quote.objects.filter(dedup_hash=dedup).first() if dedup else None
+            if existing:
+                return Response(
+                    {
+                        "detail": "duplicate",
+                        "existing_id": existing.id,
+                        "quote": QuoteSerializer(existing).data,
+                    },
+                    status=status.HTTP_409_CONFLICT,
+                )
+            raise
         return Response(QuoteSerializer(q).data, status=status.HTTP_201_CREATED)
 
     def partial_update(self, request, id=None):
         q = Quote.objects.filter(id=id).first()
         if not q:
             raise NotFound()
-        serializer = UpsertQuoteSerializer(data=request.data, partial=True)
+        serializer = AdminUpsertQuoteSerializer(data=request.data, partial=True)
         serializer.is_valid(raise_exception=True)
         for k, v in serializer.validated_data.items():
             setattr(q, k, v)
@@ -291,3 +344,57 @@ class AdminQuoteViewSet(viewsets.ViewSet):
             q.is_public = True
         q.save(update_fields=["is_featured", "is_curated", "is_public", "updated_at"])
         return Response(QuoteSerializer(q).data)
+
+    # ─── Agent observability ─────────────────────────────────────────────
+
+    @action(detail=False, methods=["get"], url_path="agent-status")
+    def agent_status(self, request):
+        """Healthcheck for the daily quotes agent. Returns last run + 7d stats."""
+        service = (request.query_params.get("service") or "quotes-agent").strip()
+        last = (
+            QuoteAgentRun.objects
+            .filter(service_name=service)
+            .order_by("-started_at")
+            .first()
+        )
+        last_ok = (
+            QuoteAgentRun.objects
+            .filter(service_name=service, status__in=["succeeded", "duplicate"])
+            .order_by("-started_at")
+            .first()
+        )
+        cutoff = timezone.now() - timedelta(days=7)
+        failures_7d = QuoteAgentRun.objects.filter(
+            service_name=service, status="failed", started_at__gte=cutoff
+        ).count()
+        runs_7d = QuoteAgentRun.objects.filter(
+            service_name=service, started_at__gte=cutoff
+        ).count()
+        return Response(
+            {
+                "service": service,
+                "last_run": AgentRunSerializer(last).data if last else None,
+                "last_success_at": last_ok.started_at if last_ok else None,
+                "last_success_quote_id": last_ok.quote_id if last_ok else None,
+                "runs_last_7d": runs_7d,
+                "failures_last_7d": failures_7d,
+                "healthy": bool(
+                    last_ok
+                    and last_ok.started_at >= timezone.now() - timedelta(hours=36)
+                ),
+            }
+        )
+
+    @action(detail=False, methods=["post"], url_path="agent-runs")
+    def create_agent_run(self, request):
+        """Agent records the outcome of each invocation here."""
+        # If service-token caller, default service_name from token name.
+        default_service = (
+            request.user.name if isinstance(request.user, ServiceUser) else "quotes-agent"
+        )
+        serializer = AgentRunSerializer(
+            data=request.data, context={"default_service": default_service}
+        )
+        serializer.is_valid(raise_exception=True)
+        run = serializer.save()
+        return Response(AgentRunSerializer(run).data, status=status.HTTP_201_CREATED)

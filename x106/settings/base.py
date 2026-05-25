@@ -124,6 +124,29 @@ X106_ADMIN_COOKIE = "x106_admin"
 X106_SESSION_COOKIE_MAX_AGE = int(timedelta(days=30).total_seconds())
 X106_ADMIN_COOKIE_MAX_AGE = int(timedelta(hours=8).total_seconds())
 
+# ─── Service tokens ───────────────────────────────────────────────────────
+#
+# Long-lived tokens for non-human callers (cron agents). We only ever store
+# the SHA-256 hex of the raw token — the agent keeps the raw value in its
+# .env on the VPS and sends it in `X-Service-Token` per request.
+#
+# To register a new service: pick a name, compute the SHA-256, set
+# `SERVICE_TOKEN_<NAME>_SHA256` env var (uppercased, hyphens → underscores).
+# Reload the api service to pick it up.
+#
+#   raw=$(openssl rand -hex 32)
+#   printf '%s' "$raw" | shasum -a 256
+#   # set SERVICE_TOKEN_QUOTES_AGENT_SHA256=<hash> in /var/www/api/.env
+#
+_REGISTERED_SERVICES = ["quotes-agent"]
+SERVICE_TOKENS: dict[str, str] = {}
+for _svc in _REGISTERED_SERVICES:
+    _key = "SERVICE_TOKEN_" + _svc.upper().replace("-", "_") + "_SHA256"
+    _hash = env.str(_key, default="")
+    if _hash:
+        SERVICE_TOKENS[_svc] = _hash.strip().lower()
+del _svc, _key, _hash  # type: ignore[name-defined]
+
 # ─── VPS console (apps.console) ───────────────────────────────────────────
 #
 # AI ops assistant runs LLM calls through the Google Gemini API via the

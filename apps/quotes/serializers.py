@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from rest_framework import serializers
 
-from .models import Quote, QuoteFavorite
+from .models import Quote, QuoteAgentRun, QuoteFavorite
 
 
 def _normalize_tags(tags: list[str]) -> list[str]:
@@ -100,3 +100,54 @@ class UpsertQuoteSerializer(serializers.Serializer):
 
     def validate_tags(self, value: list[str]) -> list[str]:
         return _normalize_tags(value)
+
+
+class AdminUpsertQuoteSerializer(UpsertQuoteSerializer):
+    """Admin / service variant — can set is_curated and is_featured directly.
+
+    Defaults all three flags to True so a service-token POST with only
+    {body, author, source} ships a fully-published, featurable quote in one
+    call (matches the agent's daily flow).
+    """
+
+    is_curated = serializers.BooleanField(required=False, default=True)
+    is_featured = serializers.BooleanField(required=False, default=False)
+    # Re-declare is_public to flip its default from False (user submit) to True.
+    is_public = serializers.BooleanField(required=False, default=True)
+
+
+class AgentRunSerializer(serializers.ModelSerializer):
+    """Used by both GET /agent-status (read) and POST /agent-runs (write)."""
+
+    quote_id = serializers.CharField(required=False, allow_null=True, allow_blank=True)
+
+    class Meta:
+        model = QuoteAgentRun
+        fields = [
+            "id",
+            "service_name",
+            "started_at",
+            "ended_at",
+            "status",
+            "theme_slug",
+            "quote_id",
+            "error_message",
+            "extras",
+        ]
+        read_only_fields = ["id", "started_at"]
+
+    def validate_status(self, v):
+        allowed = {"started", "succeeded", "skipped", "duplicate", "failed"}
+        if v not in allowed:
+            raise serializers.ValidationError(f"status must be one of {sorted(allowed)}")
+        return v
+
+    def create(self, validated_data):
+        # Default service_name from auth context if caller didn't pass one.
+        if not validated_data.get("service_name"):
+            ctx_default = (self.context or {}).get("default_service") or "quotes-agent"
+            validated_data["service_name"] = ctx_default
+        quote_id = validated_data.pop("quote_id", None) or None
+        if quote_id:
+            validated_data["quote_id"] = quote_id
+        return QuoteAgentRun.objects.create(**validated_data)
