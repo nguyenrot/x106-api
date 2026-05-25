@@ -441,7 +441,7 @@ class AdminQuoteViewSet(viewsets.ViewSet):
             raise NotFound("Agent run không tồn tại.")
         return Response(AgentRunSerializer(run).data)
 
-    @action(detail=False, methods=["post"], url_path="agent-runs/trigger")
+    @action(detail=False, methods=["post"], url_path="agent-trigger")
     def agent_runs_trigger(self, request):
         """Fire the daily quotes agent ad-hoc (admin only).
 
