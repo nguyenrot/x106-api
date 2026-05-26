@@ -15,6 +15,8 @@ urlpatterns = [
     path("api/v1/journal/", include("apps.journal.urls")),
     path("api/v1/ledger/", include("apps.ledger.urls")),
     path("api/v1/quotes/", include("apps.quotes.urls")),
+    path("api/v1/", include("apps.studio.urls")),
+    path("api/v1/", include("apps.studio.public_urls")),
     path("api/v1/", include("apps.content.urls")),
     path("api/v1/admin/", include("apps.accounts.admin_urls")),
     path("api/v1/admin/content/", include("apps.content.admin_urls")),

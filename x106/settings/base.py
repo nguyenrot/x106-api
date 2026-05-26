@@ -37,6 +37,7 @@ INSTALLED_APPS = [
     "apps.ledger",
     "apps.console",
     "apps.quotes",
+    "apps.studio",
 ]
 
 MIDDLEWARE = [
