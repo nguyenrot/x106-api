@@ -1,13 +1,23 @@
 """Root URL configuration."""
 
 from django.contrib import admin
+from django.http import HttpResponse
 from django.urls import include, path
+from django.views.decorators.cache import cache_control
 from drf_spectacular.views import (
     SpectacularAPIView,
     SpectacularSwaggerView,
 )
 
+
+@cache_control(max_age=86400)
+def robots_txt(_request):
+    """api.kynguyen.cc is a pure JSON/admin backend — no public content to index."""
+    return HttpResponse("User-agent: *\nDisallow: /\n", content_type="text/plain")
+
+
 urlpatterns = [
+    path("robots.txt", robots_txt),
     path("admin/", admin.site.urls),
     path("api/v1/", include("apps.core.urls")),
     path("api/v1/auth/", include("apps.accounts.urls")),
