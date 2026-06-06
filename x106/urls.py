@@ -23,6 +23,7 @@ urlpatterns = [
     path("api/v1/auth/", include("apps.accounts.urls")),
     path("api/v1/users/", include("apps.accounts.users_urls")),
     path("api/v1/journal/", include("apps.journal.urls")),
+    path("api/v1/", include("apps.habits.urls")),
     path("api/v1/ledger/", include("apps.ledger.urls")),
     path("api/v1/quotes/", include("apps.quotes.urls")),
     path("api/v1/", include("apps.studio.urls")),

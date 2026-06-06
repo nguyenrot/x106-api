@@ -33,6 +33,7 @@ INSTALLED_APPS = [
     "apps.core",
     "apps.accounts",
     "apps.journal",
+    "apps.habits",
     "apps.content",
     "apps.ledger",
     "apps.console",
@@ -211,6 +212,7 @@ CORS_ALLOWED_ORIGINS = [
     "http://localhost:3004",
     "http://localhost:3005",
     "http://localhost:3006",
+    "http://localhost:3009",
     "https://kynguyen.cc",
     "https://me.kynguyen.cc",
     "https://journal.kynguyen.cc",
@@ -218,6 +220,7 @@ CORS_ALLOWED_ORIGINS = [
     "https://admin.kynguyen.cc",
     "https://ledger.kynguyen.cc",
     "https://quotes.kynguyen.cc",
+    "https://habits.kynguyen.cc",
 ]
 CORS_ALLOW_CREDENTIALS = True
 CORS_ALLOW_HEADERS = ["content-type", "authorization"]
