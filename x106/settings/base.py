@@ -39,6 +39,7 @@ INSTALLED_APPS = [
     "apps.console",
     "apps.quotes",
     "apps.studio",
+    "apps.cafe",
 ]
 
 MIDDLEWARE = [
@@ -116,6 +117,11 @@ STATIC_URL = "static/"
 STATIC_ROOT = BASE_DIR / "staticfiles"
 STATICFILES_STORAGE = "whitenoise.storage.CompressedManifestStaticFilesStorage"
 
+# Local fallback for uploaded images when GitHub/jsDelivr isn't configured
+# (dev). In prod, CAFE_IMAGE_GITHUB_* is set and uploads never touch disk.
+MEDIA_URL = "media/"
+MEDIA_ROOT = BASE_DIR / "media"
+
 DEFAULT_AUTO_FIELD = "django.db.models.BigAutoField"
 
 # ─── App-specific config ──────────────────────────────────────────────────
@@ -126,6 +132,16 @@ X106_SESSION_COOKIE = "x106_session"
 X106_ADMIN_COOKIE = "x106_admin"
 X106_SESSION_COOKIE_MAX_AGE = int(timedelta(days=30).total_seconds())
 X106_ADMIN_COOKIE_MAX_AGE = int(timedelta(hours=8).total_seconds())
+
+# ─── Public image hosting (apps.cafe uploads) ─────────────────────────────
+#
+# Cafe review covers/gallery are pushed to a public GitHub repo and served via
+# jsDelivr when a token is set; otherwise they fall back to local MEDIA_ROOT.
+# Set CAFE_IMAGE_GITHUB_TOKEN (a fine-grained PAT with Contents:write on the
+# repo) in /var/www/api/.env on the VPS.
+CAFE_IMAGE_GITHUB_TOKEN = env.str("CAFE_IMAGE_GITHUB_TOKEN", default="")
+CAFE_IMAGE_GITHUB_REPO = env.str("CAFE_IMAGE_GITHUB_REPO", default="nguyenrot/cafe-image")
+CAFE_IMAGE_GITHUB_BRANCH = env.str("CAFE_IMAGE_GITHUB_BRANCH", default="main")
 
 # ─── Service tokens ───────────────────────────────────────────────────────
 #
@@ -213,6 +229,7 @@ CORS_ALLOWED_ORIGINS = [
     "http://localhost:3005",
     "http://localhost:3006",
     "http://localhost:3009",
+    "http://localhost:3010",
     "https://kynguyen.cc",
     "https://me.kynguyen.cc",
     "https://journal.kynguyen.cc",
@@ -221,6 +238,7 @@ CORS_ALLOWED_ORIGINS = [
     "https://ledger.kynguyen.cc",
     "https://quotes.kynguyen.cc",
     "https://habits.kynguyen.cc",
+    "https://cafe.kynguyen.cc",
 ]
 CORS_ALLOW_CREDENTIALS = True
 CORS_ALLOW_HEADERS = ["content-type", "authorization"]
