@@ -1,8 +1,12 @@
 from __future__ import annotations
 
+import re
+
 from rest_framework import serializers
 
 from .models import Frequency, Habit, HabitLog, HabitType
+
+TOKEN_RE = re.compile(r"^[A-Za-z0-9]{10}$")
 
 
 def _normalize_tags(tags: list) -> list[str]:
@@ -32,15 +36,26 @@ def _normalize_weekdays(days: list) -> list[int]:
     return sorted(out)
 
 
+# ── Accounts (token auth, like ledger) ──────────────────────────────────────
+
+class CreateAccountSerializer(serializers.Serializer):
+    token = serializers.CharField()
+
+    def validate_token(self, value: str) -> str:
+        if not TOKEN_RE.match(value or ""):
+            raise serializers.ValidationError("Token phải đúng 10 ký tự, chỉ chữ và số.")
+        return value
+
+
+# ── Habits ───────────────────────────────────────────────────────────────--
+
 class HabitSerializer(serializers.ModelSerializer):
     """Read + write serializer for habits. Cross-field rules live in validate()."""
-
-    user_id = serializers.CharField(read_only=True)
 
     class Meta:
         model = Habit
         fields = [
-            "id", "user_id", "name", "icon", "color",
+            "id", "name", "icon", "color",
             "type", "target_count", "unit",
             "frequency", "weekdays", "weekly_target",
             "category", "tags",
@@ -48,7 +63,7 @@ class HabitSerializer(serializers.ModelSerializer):
             "sort_order", "archived", "archived_at",
             "created_at", "updated_at",
         ]
-        read_only_fields = ["id", "user_id", "archived_at", "created_at", "updated_at"]
+        read_only_fields = ["id", "archived_at", "created_at", "updated_at"]
 
     def validate_tags(self, value):
         return _normalize_tags(value)
@@ -73,7 +88,6 @@ class HabitSerializer(serializers.ModelSerializer):
                     {"target_count": "Đặt mục tiêu ≥ 1 cho thói quen định lượng."}
                 )
         else:
-            # binary habits don't carry a numeric target
             attrs["target_count"] = None
             attrs["unit"] = ""
 
@@ -106,11 +120,10 @@ class HabitSerializer(serializers.ModelSerializer):
 
 class HabitLogSerializer(serializers.ModelSerializer):
     habit_id = serializers.CharField(read_only=True)
-    user_id = serializers.CharField(read_only=True)
 
     class Meta:
         model = HabitLog
-        fields = ["id", "habit_id", "user_id", "date", "count", "completed", "note",
+        fields = ["id", "habit_id", "date", "count", "completed", "note",
                   "created_at", "updated_at"]
         read_only_fields = fields
 

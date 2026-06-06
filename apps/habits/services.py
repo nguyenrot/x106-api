@@ -184,17 +184,17 @@ def _heatmap(habits, completed_by_habit, today: date, start: date) -> list[dict]
 
 # ── entry point ────────────────────────────────────────────────────────────
 
-def compute_stats(user) -> dict:
+def compute_stats(account) -> dict:
     from apps.core.tz import local_today
 
     today = local_today()
     start = today - timedelta(days=WINDOW_DAYS - 1)
 
-    habits = list(Habit.objects.filter(user=user, archived=False))
+    habits = list(Habit.objects.filter(account=account, archived=False))
     habit_ids = [h.id for h in habits]
 
     completed_by_habit: dict[str, set[date]] = defaultdict(set)
-    for r in HabitLog.objects.filter(user=user, habit_id__in=habit_ids, completed=True).values(
+    for r in HabitLog.objects.filter(account=account, habit_id__in=habit_ids, completed=True).values(
         "habit_id", "date"
     ):
         completed_by_habit[r["habit_id"]].add(r["date"])

@@ -5,14 +5,19 @@ from django.utils import timezone
 from rest_framework import mixins, status, viewsets
 from rest_framework.decorators import action
 from rest_framework.exceptions import NotFound
-from rest_framework.permissions import IsAuthenticated
+from rest_framework.permissions import AllowAny, IsAuthenticated
 from rest_framework.response import Response
+from rest_framework.views import APIView
 
 from apps.core.tz import local_today
+from apps.ledger.defaults import seed_default_categories
+from apps.ledger.models import LedgerAccount
 
 from . import services
+from .auth import HabitTokenAuthentication, hash_token
 from .models import Habit, HabitLog, HabitType
 from .serializers import (
+    CreateAccountSerializer,
     HabitLogSerializer,
     HabitSerializer,
     ReorderSerializer,
@@ -20,28 +25,56 @@ from .serializers import (
 )
 
 
+class HabitAccountCreateView(APIView):
+    """POST /habits/accounts — public — create a SHARED account with a chosen token.
+
+    The account is a LedgerAccount, so the same token works on /ledger/* too.
+    Body: {"token": "10-char-alnum"}. Raw token is never echoed back; the server
+    stores only its SHA-256 hash. 409 if the hash collides. Ledger's default
+    categories are seeded so the token is immediately usable on both services."""
+
+    authentication_classes: list = []
+    permission_classes = [AllowAny]
+
+    def post(self, request):
+        serializer = CreateAccountSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        token_hash = hash_token(serializer.validated_data["token"])
+
+        if LedgerAccount.objects.filter(token_hash=token_hash).exists():
+            return Response(
+                {"error": "token_taken", "detail": "Token này đã có người dùng. Chọn token khác."},
+                status=status.HTTP_409_CONFLICT,
+            )
+        account = LedgerAccount.objects.create(token_hash=token_hash)
+        seed_default_categories(account)  # keep the shared account usable on ledger too
+        return Response(
+            {"id": account.id, "created_at": account.created_at},
+            status=status.HTTP_201_CREATED,
+        )
+
+
+class HabitMeView(APIView):
+    """GET /habits/me — verify the bearer token and return account info."""
+
+    authentication_classes = [HabitTokenAuthentication]
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        return Response({"id": request.user.id, "created_at": request.user.created_at})
+
+
 class HabitViewSet(viewsets.ModelViewSet):
-    """habits.kynguyen.cc — habit definitions.
+    """habits.kynguyen.cc — habit definitions (token-scoped to the account)."""
 
-    GET    /habits                 -> list (?include_archived, ?category, ?tag)
-    POST   /habits                 -> create
-    GET    /habits/{id}            -> retrieve
-    PATCH  /habits/{id}            -> update
-    DELETE /habits/{id}            -> delete (and its logs cascade)
-    GET    /habits/today           -> habits due today + today's log/progress
-    GET    /habits/stats           -> streaks, rates, heatmap
-    POST   /habits/reorder         -> {order:[{id,sort_order}]}
-    POST   /habits/{id}/archive    -> archive
-    POST   /habits/{id}/unarchive  -> unarchive
-    """
-
+    authentication_classes = [HabitTokenAuthentication]
     permission_classes = [IsAuthenticated]
     serializer_class = HabitSerializer
     pagination_class = None
     lookup_field = "id"
 
     def get_queryset(self):
-        qs = Habit.objects.filter(user=self.request.user)
+        qs = Habit.objects.filter(account=self.request.user)
         p = self.request.query_params
         if (p.get("include_archived") or "").lower() not in ("1", "true", "yes"):
             qs = qs.filter(archived=False)
@@ -54,9 +87,9 @@ class HabitViewSet(viewsets.ModelViewSet):
         return qs.order_by("sort_order", "created_at")
 
     def perform_create(self, serializer):
-        kwargs = {"user": self.request.user}
+        kwargs = {"account": self.request.user}
         if self.request.data.get("sort_order") is None:
-            last = Habit.objects.filter(user=self.request.user).aggregate(m=Max("sort_order"))["m"]
+            last = Habit.objects.filter(account=self.request.user).aggregate(m=Max("sort_order"))["m"]
             kwargs["sort_order"] = (last or 0) + 1
         serializer.save(**kwargs)
 
@@ -66,13 +99,16 @@ class HabitViewSet(viewsets.ModelViewSet):
     def today(self, request):
         today = local_today()
         ws = services.week_start(today)
-        habits = Habit.objects.filter(user=request.user, archived=False).order_by("sort_order", "created_at")
-        logs_today = {log.habit_id: log for log in HabitLog.objects.filter(user=request.user, date=today)}
+        habits = Habit.objects.filter(account=request.user, archived=False).order_by(
+            "sort_order", "created_at"
+        )
+        logs_today = {
+            log.habit_id: log for log in HabitLog.objects.filter(account=request.user, date=today)
+        }
 
-        # per-week completed counts (for weekly_count progress)
         week_counts: dict[str, int] = {}
         for r in HabitLog.objects.filter(
-            user=request.user, completed=True, date__gte=ws, date__lte=today
+            account=request.user, completed=True, date__gte=ws, date__lte=today
         ).values("habit_id"):
             week_counts[r["habit_id"]] = week_counts.get(r["habit_id"], 0) + 1
 
@@ -100,7 +136,7 @@ class HabitViewSet(viewsets.ModelViewSet):
     def reorder(self, request):
         serializer = ReorderSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
-        owned = {h.id: h for h in Habit.objects.filter(user=request.user)}
+        owned = {h.id: h for h in Habit.objects.filter(account=request.user)}
         updated = []
         for row in serializer.validated_data["order"]:
             hid = str(row.get("id", ""))
@@ -135,20 +171,16 @@ class HabitLogViewSet(
     mixins.DestroyModelMixin,
     viewsets.GenericViewSet,
 ):
-    """Check-ins. One row per (habit, date) — POST upserts.
+    """Check-ins. One row per (habit, date) — POST upserts."""
 
-    GET    /habit-logs?habit=&date_from=&date_to=  -> list (calendar/heatmap data)
-    POST   /habit-logs                             -> upsert {habit, date?, count?, note?}
-    DELETE /habit-logs/{id}                        -> remove (uncheck)
-    """
-
+    authentication_classes = [HabitTokenAuthentication]
     permission_classes = [IsAuthenticated]
     serializer_class = HabitLogSerializer
     pagination_class = None
     lookup_field = "id"
 
     def get_queryset(self):
-        qs = HabitLog.objects.filter(user=self.request.user)
+        qs = HabitLog.objects.filter(account=self.request.user)
         p = self.request.query_params
         habit = (p.get("habit") or "").strip()
         if habit:
@@ -166,7 +198,7 @@ class HabitLogViewSet(
         serializer.is_valid(raise_exception=True)
         data = serializer.validated_data
 
-        habit = Habit.objects.filter(user=request.user, id=data["habit"]).first()
+        habit = Habit.objects.filter(account=request.user, id=data["habit"]).first()
         if habit is None:
             raise NotFound("Habit not found.")
 
@@ -187,6 +219,6 @@ class HabitLogViewSet(
         log, _created = HabitLog.objects.update_or_create(
             habit=habit,
             date=log_date,
-            defaults={"user": request.user, "count": count, "completed": completed, "note": note},
+            defaults={"account": request.user, "count": count, "completed": completed, "note": note},
         )
         return Response(HabitLogSerializer(log).data, status=status.HTTP_200_OK)

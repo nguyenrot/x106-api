@@ -1,14 +1,16 @@
 """Habit + HabitLog models.
 
-A `Habit` is a definition (name, icon, type, schedule). A `HabitLog` is one
-check-in per (habit, date); for quantitative habits it carries a `count` and a
-derived `completed` flag (count >= target). FK to User uses db_constraint=False
-to match the rest of the X106 schema (legacy charset/collation mismatch).
+Auth is token-based and SHARED with ledger: one opaque token (a LedgerAccount)
+works on both /ledger/* and /habits/*. Habit/HabitLog therefore hang off
+`ledger.LedgerAccount` (table `ledger_accounts`) via a cross-app FK with
+db_constraint=False (no DB-level constraint across apps; scoped in app code).
+
+A HabitLog is one check-in per (habit, date); for quantitative habits it carries
+a `count` and a derived `completed` flag (count >= target).
 """
 
 from __future__ import annotations
 
-from django.conf import settings
 from django.db import models
 
 from apps.core.ids import new_id
@@ -27,16 +29,16 @@ class Frequency(models.TextChoices):
 
 class Habit(models.Model):
     id = models.CharField(primary_key=True, max_length=36, default=new_id, editable=False)
-    user = models.ForeignKey(
-        settings.AUTH_USER_MODEL,
-        on_delete=models.DO_NOTHING,
-        db_column="user_id",
+    account = models.ForeignKey(
+        "ledger.LedgerAccount",
+        on_delete=models.CASCADE,
+        db_column="account_id",
         db_constraint=False,
         related_name="habits",
     )
     name = models.CharField(max_length=120)
     icon = models.CharField(max_length=40, blank=True, default="")   # phosphor slug, e.g. "drop"
-    color = models.CharField(max_length=20, blank=True, default="")  # hex, e.g. "#34C759"
+    color = models.CharField(max_length=20, blank=True, default="")  # palette key, e.g. "green"
 
     type = models.CharField(max_length=10, choices=HabitType.choices, default=HabitType.BINARY)
     target_count = models.PositiveIntegerField(null=True, blank=True)  # required when type=count
@@ -63,7 +65,7 @@ class Habit(models.Model):
         db_table = "habits"
         ordering = ["sort_order", "created_at"]
         indexes = [
-            models.Index(fields=["user", "archived"], name="idx_habits_user_archived"),
+            models.Index(fields=["account", "archived"], name="idx_habits_acct_archived"),
         ]
 
 
@@ -76,10 +78,10 @@ class HabitLog(models.Model):
         db_constraint=False,
         related_name="logs",
     )
-    user = models.ForeignKey(
-        settings.AUTH_USER_MODEL,
-        on_delete=models.DO_NOTHING,
-        db_column="user_id",
+    account = models.ForeignKey(
+        "ledger.LedgerAccount",
+        on_delete=models.CASCADE,
+        db_column="account_id",
         db_constraint=False,
         related_name="habit_logs",
     )
@@ -98,5 +100,5 @@ class HabitLog(models.Model):
             models.UniqueConstraint(fields=["habit", "date"], name="uq_habit_logs_habit_date"),
         ]
         indexes = [
-            models.Index(fields=["user", "date"], name="idx_habit_logs_user_date"),
+            models.Index(fields=["account", "date"], name="idx_habit_logs_acct_date"),
         ]
