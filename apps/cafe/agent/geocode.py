@@ -9,6 +9,7 @@ publishes without coordinates (the frontend map falls back to a text query).
 from __future__ import annotations
 
 import logging
+import re
 import time
 
 import httpx
@@ -42,13 +43,28 @@ def _query(q: str) -> tuple[float, float] | None:
     return lat, lng
 
 
+_STREET_ABBR = re.compile(r"\b[DĐđ]\.\s*")  # "D. Đình Nghệ" / "Đ. Lê Lợi" → bare street name
+_HOUSE_NO = re.compile(r"^\s*\d+[A-Za-z]?(?:[/-]\w+)*\s+")
+
+
+def _normalize(address: str) -> str:
+    """Strip the 'Đường' abbreviation Nominatim chokes on (agy writes 'D. X')."""
+    return _STREET_ABBR.sub("", address).strip()
+
+
 def geocode_da_nang(address: str, name: str = "") -> tuple[float, float] | None:
-    """Best-effort (lat, lng) for a cafe. Tries address, then name+address."""
-    candidates = []
-    if address:
-        candidates.append(f"{address}, Đà Nẵng, Việt Nam")
+    """Best-effort (lat, lng). Tries the full address, then street-without-house-
+    number (OSM VN coverage often lacks house numbers), then the cafe name."""
+    candidates: list[str] = []
+    norm = _normalize(address) if address else ""
+    if norm:
+        candidates.append(f"{norm}, Đà Nẵng, Việt Nam")
+        street = _HOUSE_NO.sub("", norm.split(",")[0]).strip()
+        rest = ", ".join(p.strip() for p in norm.split(",")[1:] if p.strip())
+        if street and street != norm:
+            candidates.append(f"{street}, {rest}, Đà Nẵng, Việt Nam" if rest else f"{street}, Đà Nẵng, Việt Nam")
     if name:
-        candidates.append(f"{name}, {address}, Đà Nẵng, Việt Nam" if address else f"{name}, Đà Nẵng, Việt Nam")
+        candidates.append(f"{name}, Đà Nẵng, Việt Nam")
 
     for i, q in enumerate(candidates):
         try:
