@@ -147,6 +147,7 @@ Admin-auth (cookie x106_admin OR Bearer with `role:admin`):
 - `GET /admin/content/{app}`, `PUT /admin/content/{app}/{section}`
 - `GET /admin/users`, `POST /admin/users/{id}/{activate|deactivate}`, `DELETE /admin/users/{id}`
 - VPS console: `GET|POST|DELETE /admin/console/sessions[/{id}]`, `POST /admin/console/sessions/{id}/messages`, `GET /admin/console/messages/{id}`, `GET /admin/console/execs/{id}`, `POST /admin/console/execs/{id}/{approve,deny,cancel,explain}`, `GET /admin/console/logs`, `GET|PUT /admin/console/settings`
+- Cafe: CRUD `GET|POST|PATCH|DELETE /admin/cafe/reviews[/{id}]`, `POST /admin/cafe/uploads/image`; **review agent** `POST|GET /admin/cafe/agent/runs[/{id}]` (POST tạo run → Celery `apps.cafe.tasks.run_cafe_agent_now`; client poll). Agent tự chạy 08:30 VN qua beat (`apps.cafe.tasks.generate_cafe_review`), gate env `CAFE_AGENT_ENABLED` (+`CAFE_AGENT_MIN_CONFIDENCE`); pipeline ở `apps/cafe/agent/` (agy CLI web search → validate giọng tổng-hợp/dedup-slug → Nominatim geocode → đăng qua `CafeReviewWriteSerializer`); audit `cafe_agent_runs`. Test: `manage.py run_cafe_agent --dry-run --force`.
 
 OpenAPI schema: `/api/schema/`. Swagger UI: `/api/docs/`.
 
