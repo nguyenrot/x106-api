@@ -19,9 +19,10 @@ from rest_framework.views import APIView
 
 from apps.core.permissions import IsAdminToken
 
-from .models import CafeReview
+from .models import CafeAgentRun, CafeReview
 from .serializers import (
     AdminCafeReviewListSerializer,
+    CafeAgentRunSerializer,
     CafeReviewDetailSerializer,
     CafeReviewListSerializer,
     CafeReviewWriteSerializer,
@@ -118,6 +119,27 @@ class AdminCafeReviewViewSet(viewsets.ModelViewSet):
         if self.action == "list":
             return AdminCafeReviewListSerializer
         return CafeReviewWriteSerializer
+
+
+class AdminCafeAgentRunViewSet(viewsets.ReadOnlyModelViewSet):
+    """Agent runs: observe + trigger. /api/v1/admin/cafe/agent/runs
+
+    POST creates the run row, queues the slow work on Celery, and returns 201
+    immediately — the admin UI polls GET /{id} until status leaves `started`.
+    """
+
+    permission_classes = [IsAdminToken]
+    serializer_class = CafeAgentRunSerializer
+    queryset = CafeAgentRun.objects.select_related("review").all()
+
+    def create(self, request):
+        from .tasks import run_cafe_agent_now
+
+        run = CafeAgentRun.objects.create(slot="manual", status="started")
+        run_cafe_agent_now.delay(run.id)
+        return Response(
+            CafeAgentRunSerializer(run).data, status=status.HTTP_201_CREATED
+        )
 
 
 class AdminCafeImageUploadView(APIView):

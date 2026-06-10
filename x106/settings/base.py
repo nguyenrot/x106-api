@@ -269,7 +269,19 @@ CELERY_BEAT_SCHEDULE = {
         "task": "apps.ledger.tasks.auto_expense_for_missing_days",
         "schedule": crontab(hour=23, minute=50),
     },
+    # 08:30 giờ Việt Nam — agent tổng hợp 1 bài review quán cà phê Đà Nẵng
+    # (no-op khi CAFE_AGENT_ENABLED=false).
+    "cafe-agent-daily-review": {
+        "task": "apps.cafe.tasks.generate_cafe_review",
+        "schedule": crontab(hour=8, minute=30),
+        "args": ("daily",),
+    },
 }
+
+# ─── Cafe review agent ────────────────────────────────────────────────────
+
+CAFE_AGENT_ENABLED = env.bool("CAFE_AGENT_ENABLED", default=False)
+CAFE_AGENT_MIN_CONFIDENCE = env.float("CAFE_AGENT_MIN_CONFIDENCE", default=0.7)
 
 # ─── Logging ──────────────────────────────────────────────────────────────
 

@@ -64,3 +64,57 @@ class CafeReview(models.Model):
 
     def __str__(self) -> str:  # pragma: no cover - admin display only
         return self.name
+
+
+class CafeAgentRun(models.Model):
+    """One row per auto-review-agent invocation (mirrors quotes.QuoteAgentRun).
+
+    Write-once audit trail: prompt, raw agy output, parsed JSON, validation
+    verdict. Drives the admin "Tạo bài AI" button (client polls the row until
+    status leaves `started`) and the runs log.
+    """
+
+    STATUS_CHOICES = [
+        ("started", "started"),
+        ("succeeded", "succeeded"),
+        ("skipped", "skipped"),
+        ("failed", "failed"),
+    ]
+    SLOT_CHOICES = [
+        ("daily", "daily"),
+        ("manual", "manual"),
+    ]
+
+    id = models.CharField(primary_key=True, max_length=36, default=new_id, editable=False)
+    slot = models.CharField(max_length=16, choices=SLOT_CHOICES, default="manual")
+    started_at = models.DateTimeField(auto_now_add=True)
+    ended_at = models.DateTimeField(null=True, blank=True)
+    status = models.CharField(max_length=16, choices=STATUS_CHOICES, default="started")
+    review = models.ForeignKey(
+        CafeReview,
+        on_delete=models.SET_NULL,
+        db_constraint=False,
+        null=True,
+        blank=True,
+        related_name="agent_runs",
+    )
+    cafe_name = models.CharField(max_length=200, blank=True, default="")
+    error_message = models.TextField(blank=True, default="")
+
+    # Full audit trail — written once when the run finishes.
+    prompt = models.TextField(blank=True, default="")
+    agy_response_raw = models.TextField(blank=True, default="")
+    agy_response_parsed = models.JSONField(null=True, blank=True)
+    validation_error = models.TextField(blank=True, default="")
+    duration_ms = models.IntegerField(null=True, blank=True)
+    agy_duration_ms = models.IntegerField(null=True, blank=True)
+
+    class Meta:
+        db_table = "cafe_agent_runs"
+        ordering = ["-started_at"]
+        indexes = [
+            models.Index(fields=["status", "started_at"], name="ix_car_status_started"),
+        ]
+
+    def __str__(self) -> str:  # pragma: no cover - admin display only
+        return f"{self.slot} {self.status} {self.cafe_name or '—'}"

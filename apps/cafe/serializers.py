@@ -7,7 +7,7 @@ from rest_framework import serializers
 
 from apps.core.text import slugify_vi
 
-from .models import CafeReview
+from .models import CafeAgentRun, CafeReview
 
 
 def _normalize_slugs(values: list, *, max_items: int = 24) -> list[str]:
@@ -205,3 +205,23 @@ class CafeReviewWriteSerializer(serializers.ModelSerializer):
     def update(self, instance, validated_data):
         validated_data = self._apply_derived(validated_data, instance=instance)
         return super().update(instance, validated_data)
+
+
+# ── Agent runs (admin observability + manual trigger) ───────────────────────
+
+class CafeAgentRunSerializer(serializers.ModelSerializer):
+    """Status shape the admin UI polls. Raw agy transcripts stay out of the
+    API payload (they can reach 200 KB) — Django admin has them if needed."""
+
+    review_slug = serializers.SlugField(source="review.slug", read_only=True, allow_null=True)
+
+    class Meta:
+        model = CafeAgentRun
+        fields = [
+            "id", "slot", "status", "cafe_name",
+            "review_id", "review_slug",
+            "error_message", "validation_error",
+            "duration_ms", "agy_duration_ms",
+            "started_at", "ended_at",
+        ]
+        read_only_fields = fields
