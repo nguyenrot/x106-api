@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from django.db import IntegrityError
 from django.db.models import Max
 from django.utils import timezone
 from rest_framework import mixins, status, viewsets
@@ -46,7 +47,15 @@ class HabitAccountCreateView(APIView):
                 {"error": "token_taken", "detail": "Token này đã có người dùng. Chọn token khác."},
                 status=status.HTTP_409_CONFLICT,
             )
-        account = LedgerAccount.objects.create(token_hash=token_hash)
+        try:
+            account = LedgerAccount.objects.create(token_hash=token_hash)
+        except IntegrityError:
+            # Race: another request claimed the same token between the
+            # exists() check and the insert. Same 409 as above.
+            return Response(
+                {"error": "token_taken", "detail": "Token này đã có người dùng. Chọn token khác."},
+                status=status.HTTP_409_CONFLICT,
+            )
         seed_default_categories(account)  # keep the shared account usable on ledger too
         return Response(
             {"id": account.id, "created_at": account.created_at},

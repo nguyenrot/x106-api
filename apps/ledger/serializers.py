@@ -65,7 +65,29 @@ class LedgerTransactionSerializer(serializers.ModelSerializer):
             raise serializers.ValidationError("Phân loại không được để trống.")
         if len(v) > 64:
             raise serializers.ValidationError("Phân loại tối đa 64 ký tự.")
+        # The slug must belong to the account's own category list (see the
+        # model docstring — there is no DB-level FK). Archived rows count too:
+        # old transactions legitimately reference archived slugs and editing
+        # them must not break.
+        account = self._resolve_account()
+        if account is not None and not LedgerCategoryRow.objects.filter(
+            account=account, slug=v
+        ).exists():
+            raise serializers.ValidationError("Phân loại không tồn tại trong tài khoản.")
         return v
+
+    def _resolve_account(self) -> Optional[LedgerAccount]:
+        """Account on updates comes from the instance; on creates from the
+        authenticated request user (LedgerTokenAuthentication sets request.user
+        to the LedgerAccount). Returns None when neither is available (e.g.
+        read-only many=True serialization, where validation never runs)."""
+        if self.instance is not None and getattr(self.instance, "account_id", None):
+            return self.instance.account
+        request = self.context.get("request")
+        user = getattr(request, "user", None)
+        if isinstance(user, LedgerAccount):
+            return user
+        return None
 
 
 # ── Category CRUD ─────────────────────────────────────────────────────────

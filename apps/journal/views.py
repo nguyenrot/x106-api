@@ -25,10 +25,14 @@ FREEZES_PER_MONTH = 1
 
 
 def _used_in_month(user_id: str, ref: date_cls) -> int:
+    """Freezes CONSUMED during `ref`'s calendar month (by `used_at`, i.e. when
+    the user spent the freeze) — not by the day it was applied to. The quota
+    is "one freeze action per month", so freezing a day from last month still
+    burns this month's allowance."""
     return StreakFreeze.objects.filter(
         user_id=user_id,
-        applied_date__year=ref.year,
-        applied_date__month=ref.month,
+        used_at__year=ref.year,
+        used_at__month=ref.month,
     ).count()
 
 

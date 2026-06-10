@@ -205,6 +205,13 @@ class QuoteViewSet(viewsets.ViewSet):
             QuoteFavorite.objects.filter(user=request.user, quote=quote).delete()
             return Response(status=status.HTTP_204_NO_CONTENT)
 
+        # Same visibility rule as `retrieve`: curated public is favoritable by
+        # anyone; otherwise only the owner. Without this, favoriting an
+        # arbitrary id leaks private quote bodies via /me/favorites (IDOR).
+        if not (quote.is_curated and quote.is_public):
+            if quote.user_id != request.user.id:
+                raise NotFound("Không tìm thấy quote.")
+
         QuoteFavorite.objects.get_or_create(user=request.user, quote=quote)
         return Response({"favorited": True}, status=status.HTTP_201_CREATED)
 

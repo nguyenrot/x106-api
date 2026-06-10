@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from django.db import IntegrityError
 from rest_framework import status, viewsets
 from rest_framework.decorators import action
 from rest_framework.permissions import AllowAny, IsAuthenticated
@@ -49,7 +50,15 @@ class LedgerAccountCreateView(APIView):
                 {"error": "token_taken", "detail": "Token này đã có người dùng. Hãy chọn token khác."},
                 status=status.HTTP_409_CONFLICT,
             )
-        account = LedgerAccount.objects.create(token_hash=token_hash)
+        try:
+            account = LedgerAccount.objects.create(token_hash=token_hash)
+        except IntegrityError:
+            # Race: another request claimed the same token between the
+            # exists() check and the insert. Same 409 as above.
+            return Response(
+                {"error": "token_taken", "detail": "Token này đã có người dùng. Hãy chọn token khác."},
+                status=status.HTTP_409_CONFLICT,
+            )
         seed_default_categories(account)
         return Response(
             {"id": account.id, "created_at": account.created_at},

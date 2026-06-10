@@ -141,10 +141,14 @@ def _build_history(session: ConsoleSession) -> list[dict]:
     system_prompt = get_setting(SETTING_SYSTEM_PROMPT)
     out: list[dict] = [{"role": "system", "content": system_prompt}]
 
+    # Take the most recent N messages, then restore chronological order —
+    # slicing the ascending queryset would freeze history at the oldest 20
+    # once a session grows past the cap.
     msgs = list(
-        session.messages.order_by("created_at")
+        session.messages.order_by("-created_at")
         .prefetch_related("execs")[: _MAX_HISTORY_MESSAGES]
     )
+    msgs.reverse()
 
     for m in msgs:
         if m.role == ConsoleMessage.ROLE_USER:
@@ -294,9 +298,13 @@ def _resume_chat_if_linked(exec_row: ConsoleExec) -> None:
     ).exists()
     if pending_siblings:
         return
+    # Bump created_at so recover_stuck_execs (5-min sweep on PENDING/STREAMING)
+    # doesn't kill a turn that resumed after a long human-approval wait —
+    # same trick as MessageRetryView.
     ConsoleMessage.objects.filter(pk=exec_row.message_id).update(
         step_count=F("step_count") + 1,
         status=ConsoleMessage.STATUS_STREAMING,
+        created_at=timezone.now(),
     )
     run_console_chat.delay(exec_row.message_id)
 

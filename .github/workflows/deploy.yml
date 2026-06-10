@@ -62,6 +62,7 @@ jobs:
         env:
           DJANGO_SETTINGS_MODULE: x106.settings.production
           DJANGO_SECRET_KEY: collectstatic-only
+          JWT_SECRET: collectstatic-only  # production.py hard-fails on missing secrets
           DB_HOST: 127.0.0.1
           DB_PORT: 3306
           DB_NAME: test_x106

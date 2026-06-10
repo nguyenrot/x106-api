@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import markdown as md
+import nh3
 from django.utils.timezone import now
 from rest_framework import serializers
 
@@ -36,10 +37,34 @@ def _normalize_urls(values: list, *, max_items: int = 30) -> list[str]:
     return out
 
 
+# The "extra" extension passes raw inline HTML straight through, and the
+# rendered result is v-html'd on the public site — sanitize server-side with
+# an allowlist of standard markdown output tags.
+_ALLOWED_TAGS = {
+    "p", "br", "hr",
+    "h1", "h2", "h3", "h4", "h5", "h6",
+    "strong", "em", "del", "code", "pre", "blockquote",
+    "ul", "ol", "li",
+    "a", "img",
+    "table", "thead", "tbody", "tfoot", "tr", "th", "td", "caption",
+}
+_ALLOWED_ATTRIBUTES = {
+    "a": {"href", "title"},
+    "img": {"src", "alt", "title"},
+}
+
+
 def _render_md(text: str) -> str:
     if not text:
         return ""
-    return md.markdown(text, extensions=["extra", "sane_lists", "nl2br"])
+    html = md.markdown(text, extensions=["extra", "sane_lists", "nl2br"])
+    return nh3.clean(
+        html,
+        tags=_ALLOWED_TAGS,
+        attributes=_ALLOWED_ATTRIBUTES,
+        url_schemes={"http", "https", "mailto"},
+        link_rel="noopener noreferrer",
+    )
 
 
 # ── Public read serializers ─────────────────────────────────────────────────
