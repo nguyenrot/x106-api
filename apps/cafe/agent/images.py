@@ -3,10 +3,11 @@
 The agent (agy web search) proposes image URLs it actually saw on pages about
 the cafe (`image_candidates`). We then:
 
-1. download each candidate (size/type capped),
-2. reject thumbnails/logos by dimension + aspect checks,
-3. ask Gemini vision (GEMINI_API_KEY already on the VPS for the console app)
-   whether the photo really shows a cafe matching the review's description,
+1. ask agy (one extra invocation) to OPEN each candidate and approve only real
+   photos of a cafe matching the review — no Gemini API key involved, the agy
+   CLI runs on its own Antigravity account,
+2. download the approved candidates in agy's preferred order (size/type capped),
+3. reject thumbnails/logos by dimension + aspect checks,
 4. re-host the first passing photo through the existing `store_image`
    optimizer → GitHub → jsDelivr CDN pipeline.
 
@@ -17,15 +18,14 @@ Never raises out of `find_cover` — a cover must never block publishing.
 from __future__ import annotations
 
 import io
-import json
 import logging
-import time
 
 import httpx
-from django.conf import settings
 from PIL import Image
 
 from apps.core.uploads import store_image
+
+from .agy import AgyError, run_agy
 
 log = logging.getLogger("apps.cafe.agent.images")
 
@@ -36,20 +36,50 @@ DOWNLOAD_UA = (
     "Mozilla/5.0 (compatible; cafe.kynguyen.cc cover-fetcher; phamkynguyen753@gmail.com)"
 )
 
-_VERIFY_PROMPT = """Bạn đang kiểm duyệt ảnh bìa cho một bài giới thiệu quán cà phê ở Đà Nẵng.
+_PICK_PROMPT = """Bạn là biên tập viên ảnh của blog cafe.kynguyen.cc. Hãy MỞ XEM từng ảnh dưới đây (dùng khả năng xem web/ảnh của bạn) và chọn ảnh bìa.
 
-Quán: {name} — khu vực {district}.
+Quán: {name} — khu vực {district}, Đà Nẵng.
 Mô tả bài viết: {excerpt}
 
-Ảnh đính kèm có ĐẠT làm ảnh bìa không? Đạt = ảnh chụp thực tế (không phải logo,
-menu chữ, bản đồ, ảnh render 3D, chân dung cá nhân, watermark che kín) và nội
-dung là không gian/đồ uống/mặt tiền một quán cà phê phù hợp mô tả trên.
+Danh sách ảnh ứng viên (đánh số từ 0):
+{candidates_block}
 
-Trả về đúng một JSON object: {{"match": true/false, "reason": "ngắn gọn"}}"""
+Tiêu chí ĐẠT: ảnh chụp thực tế (không phải logo, menu chữ, bản đồ, ảnh render
+3D, chân dung cá nhân, ảnh watermark che kín) và nội dung là không gian /
+mặt tiền / đồ uống của một quán cà phê phù hợp mô tả trên.
+
+Trả về đúng MỘT JSON object, không giải thích gì thêm:
+{{"approved": [các index ĐẠT, xếp ảnh hợp làm bìa nhất lên trước], "reason": "ngắn gọn"}}
+Không ảnh nào đạt → {{"approved": [], "reason": "..."}}"""
 
 
-def _download(url: str) -> tuple[bytes, str] | None:
-    """Fetch an image URL. Returns (bytes, mime) or None."""
+def _agy_approve(candidates: list[dict], *, name: str, district: str, excerpt: str) -> list[int]:
+    """One agy call vets the whole candidate list. Returns approved indices in
+    preference order; [] on agy failure (strict: unverified images never ship)."""
+    block = "\n".join(
+        f"{i}. {c['url']}" + (f" (thấy trên trang: {c['page']})" if c.get("page") else "")
+        for i, c in enumerate(candidates)
+    )
+    prompt = _PICK_PROMPT.format(
+        name=name, district=district, excerpt=excerpt, candidates_block=block
+    )
+    try:
+        result = run_agy(prompt, timeout_sec=240)
+    except AgyError as exc:
+        log.warning("agy cover vetting failed (%s) — skipping cover", exc)
+        return []
+    raw = result.parsed.get("approved")
+    if not isinstance(raw, list):
+        log.warning("agy cover vetting returned no 'approved' list: %r", result.parsed)
+        return []
+    approved = [i for i in raw if isinstance(i, int) and 0 <= i < len(candidates)]
+    if not approved:
+        log.info("agy rejected all cover candidates for %s: %s", name, result.parsed.get("reason"))
+    return approved
+
+
+def _download(url: str) -> bytes | None:
+    """Fetch an image URL. Returns bytes or None."""
     try:
         with httpx.Client(
             timeout=20.0, follow_redirects=True, headers={"User-Agent": DOWNLOAD_UA}
@@ -63,8 +93,7 @@ def _download(url: str) -> tuple[bytes, str] | None:
     if not raw or len(raw) > MAX_DOWNLOAD_BYTES:
         log.info("cover candidate rejected (size %s bytes): %s", len(raw or b""), url)
         return None
-    mime = (resp.headers.get("content-type") or "").split(";")[0].strip() or "image/jpeg"
-    return raw, mime
+    return raw
 
 
 def _dimensions_ok(raw: bytes) -> bool:
@@ -79,47 +108,6 @@ def _dimensions_ok(raw: bytes) -> bool:
     return ASPECT_RANGE[0] <= aspect <= ASPECT_RANGE[1]
 
 
-def _gemini_verify(raw: bytes, mime: str, *, name: str, district: str, excerpt: str) -> bool:
-    """True only when Gemini confirms the photo matches. Missing key / API error
-    → False: the user's requirement is verify-then-attach, so unverified images
-    never ship. Transient 503/429 spikes get one retry — they killed an
-    otherwise-good candidate on the Lighthouse run."""
-    api_key = settings.GEMINI_API_KEY
-    if not api_key:
-        log.warning("GEMINI_API_KEY unset — cannot verify cover photos, skipping cover")
-        return False
-
-    from google import genai
-    from google.genai import errors as genai_errors
-    from google.genai import types as genai_types
-
-    client = genai.Client(api_key=api_key)
-    contents = [
-        genai_types.Part.from_bytes(data=raw, mime_type=mime),
-        _VERIFY_PROMPT.format(name=name, district=district, excerpt=excerpt),
-    ]
-    for attempt in (1, 2):
-        try:
-            resp = client.models.generate_content(model="gemini-2.5-flash", contents=contents)
-            text = (resp.text or "").strip()
-            start, end = text.find("{"), text.rfind("}")
-            verdict = json.loads(text[start : end + 1])
-            if not verdict.get("match"):
-                log.info("gemini rejected cover for %s: %s", name, verdict.get("reason"))
-            return bool(verdict.get("match"))
-        except genai_errors.APIError as exc:
-            if attempt == 1 and getattr(exc, "code", None) in (429, 503):
-                log.info("gemini transient %s — retrying once in 12s", exc.code)
-                time.sleep(12)
-                continue
-            log.warning("gemini cover verify failed (%s) — skipping candidate", exc)
-            return False
-        except Exception as exc:
-            log.warning("gemini cover verify failed (%s) — skipping candidate", exc)
-            return False
-    return False
-
-
 def find_cover(
     candidates: list[dict],
     *,
@@ -127,18 +115,22 @@ def find_cover(
     district: str,
     excerpt: str,
 ) -> dict | None:
-    """First candidate that downloads, passes dimension checks and Gemini
-    verification → re-hosted CDN URL. Returns {"url", "source_page"} or None."""
-    for cand in candidates[:4]:
+    """agy vets the list once, then the first approved candidate that downloads
+    and passes dimension checks is re-hosted. Returns {"url", "source_page"}
+    or None."""
+    candidates = candidates[:4]
+    if not candidates:
+        return None
+
+    approved = _agy_approve(candidates, name=name, district=district, excerpt=excerpt)
+    for idx in approved:
+        cand = candidates[idx]
         url = cand.get("url", "")
-        fetched = _download(url)
-        if fetched is None:
+        raw = _download(url)
+        if raw is None:
             continue
-        raw, mime = fetched
         if not _dimensions_ok(raw):
             log.info("cover candidate rejected (dimensions): %s", url)
-            continue
-        if not _gemini_verify(raw, mime, name=name, district=district, excerpt=excerpt):
             continue
         try:
             meta = store_image(raw, prefix="cafe", max_dim=1600)
