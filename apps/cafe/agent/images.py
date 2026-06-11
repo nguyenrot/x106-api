@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import io
 import logging
+from dataclasses import dataclass, field
 
 import httpx
 from PIL import Image
@@ -27,7 +28,16 @@ from PIL import Image
 from apps.core.uploads import store_image
 
 from .agy import AgyError, run_agy
-from .validate import parse_coords, parse_image_candidates
+from .validate import parse_coords, parse_image_candidates, parse_rating
+
+
+@dataclass
+class CoverSearch:
+    """Everything one cover-hunt agy session can pick up about the cafe."""
+
+    candidates: list[dict] = field(default_factory=list)
+    coords: tuple[float, float] | None = None
+    rating: tuple[float, str] | None = None  # (score, source)
 
 log = logging.getLogger("apps.cafe.agent.images")
 
@@ -54,13 +64,15 @@ Quy tắc:
   (không phải logo, menu chữ, bản đồ, render 3D, chân dung cá nhân, watermark
   che kín) và nội dung là không gian / mặt tiền / đồ uống của quán.
 - Xếp ảnh hợp làm ảnh bìa nhất lên đầu danh sách.
-- Tiện thể: nếu thấy TOẠ ĐỘ chính xác của quán (listing Google Maps / trang
-  nguồn ghi rõ) thì thêm "lat"/"lng" (số thập phân). Không chắc → để null.
-  **Không ước lượng, không bịa toạ độ.**
+- Tiện thể tra luôn trên listing Google Maps của quán (search tên quán):
+  - TOẠ ĐỘ chính xác → "lat"/"lng" (số thập phân). Không chắc → null.
+  - ĐIỂM đánh giá công khai → "rating_overall" (đúng số nguồn nêu, 0–5) +
+    "rating_source" (vd "Google Maps (~850 đánh giá)"). Không thấy → null.
+  - **Không tự chấm, không ước lượng — chỉ chép số có thật.**
 
 Trả về đúng một JSON object, không giải thích gì thêm:
-{{"image_candidates": [{{"url": "https://…", "page": "https://trang-nguon"}}], "lat": null, "lng": null}}
-Không tìm được ảnh chắc chắn đúng quán → {{"image_candidates": [], "lat": null, "lng": null}}"""
+{{"image_candidates": [{{"url": "https://…", "page": "https://trang-nguon"}}], "lat": null, "lng": null, "rating_overall": null, "rating_source": null}}
+Không tìm được ảnh chắc chắn đúng quán → giữ "image_candidates": [] (các field khác vẫn điền nếu tra được)"""
 
 
 def search_cover_candidates(
@@ -69,11 +81,11 @@ def search_cover_candidates(
     address: str,
     district: str,
     known: list[dict] | None = None,
-) -> tuple[list[dict], tuple[float, float] | None]:
-    """Dedicated agy session: hunt + vet photos of THIS cafe, and pick up the
-    cafe's coordinates when a source states them (Google Maps listings beat
-    Nominatim on Vietnamese alley addresses). Returns (vetted candidates in
-    preference order, coords|None); ([], None) on miss or agy failure."""
+) -> CoverSearch:
+    """Dedicated agy session: hunt + vet photos of THIS cafe, plus pick up the
+    cafe's coordinates and public Google Maps score when the listing states
+    them (Maps listings beat Nominatim on Vietnamese alley addresses). Empty
+    CoverSearch on agy failure."""
     known_block = ""
     if known:
         lines = "\n".join(f"  - {c['url']}" for c in known[:4])
@@ -89,11 +101,15 @@ def search_cover_candidates(
         result = run_agy(prompt, timeout_sec=480)
     except AgyError as exc:
         log.warning("agy cover search failed for %s: %s", name, exc)
-        return [], None
+        return CoverSearch()
     candidates = parse_image_candidates(result.parsed.get("image_candidates"))
     if not candidates:
         log.info("agy found no cover candidates for %s", name)
-    return candidates, parse_coords(result.parsed)
+    return CoverSearch(
+        candidates=candidates,
+        coords=parse_coords(result.parsed),
+        rating=parse_rating(result.parsed),
+    )
 
 
 def _download(url: str) -> bytes | None:

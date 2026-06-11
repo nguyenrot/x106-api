@@ -33,20 +33,29 @@ class Command(BaseCommand):
 
         need_cover = not review.cover_image_url or opts["force"]
         need_coords = review.lat is None
-        if not need_cover and not need_coords:
-            raise CommandError("Bài đã có cover lẫn toạ độ — dùng --force để ghi đè cover.")
+        need_rating = review.rating_overall is None
+        if not need_cover and not need_coords and not need_rating:
+            raise CommandError("Bài đã đủ cover, toạ độ lẫn điểm — dùng --force để ghi đè cover.")
 
-        candidates, coords = search_cover_candidates(
+        search = search_cover_candidates(
             name=review.name, address=review.address, district=review.district
         )
-        self.stdout.write(f"agy trả {len(candidates)} ứng viên ảnh, coords: {coords}")
+        candidates = search.candidates
+        self.stdout.write(
+            f"agy trả {len(candidates)} ứng viên ảnh, coords: {search.coords}, rating: {search.rating}"
+        )
         self.stdout.write(json.dumps(candidates, ensure_ascii=False, indent=2))
 
         update_fields = ["updated_at"]
-        if need_coords and coords:
-            review.lat, review.lng = coords
+        if need_coords and search.coords:
+            review.lat, review.lng = search.coords
             update_fields += ["lat", "lng"]
-            self.stdout.write(self.style.SUCCESS(f"Đã gắn toạ độ: {coords}"))
+            self.stdout.write(self.style.SUCCESS(f"Đã gắn toạ độ: {search.coords}"))
+
+        if need_rating and search.rating:
+            review.rating_overall = search.rating[0]
+            update_fields.append("rating_overall")
+            self.stdout.write(self.style.SUCCESS(f"Đã gắn điểm: {search.rating[0]} ({search.rating[1]})"))
 
         if need_cover and candidates:
             cover = find_cover(candidates, name=review.name)

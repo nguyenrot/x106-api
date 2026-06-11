@@ -81,6 +81,18 @@ class ValidatedReview:
     image_candidates: list[dict]
 
 
+def parse_rating(parsed: dict) -> tuple[float, str] | None:
+    """Agent-supplied public score — only with a stated source (anti-fabrication)."""
+    source = str(parsed.get("rating_source") or "").strip()
+    try:
+        rating = round(float(parsed.get("rating_overall")), 1)  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        return None
+    if not 0 <= rating <= 5 or not source:
+        return None
+    return rating, source
+
+
 def parse_coords(parsed: dict) -> tuple[float, float] | None:
     """Agent-supplied lat/lng — accepted only inside the Đà Nẵng bbox."""
     try:
@@ -192,16 +204,8 @@ def validate(
             if not 1 <= price_level <= 4:
                 price_level = None
 
-    rating_overall = parsed.get("rating_overall")
-    rating_source = (parsed.get("rating_source") or "").strip()
-    if rating_overall is not None:
-        try:
-            rating_overall = round(float(rating_overall), 1)
-        except (TypeError, ValueError):
-            rating_overall = None
-        else:
-            if not 0 <= rating_overall <= 5 or not rating_source:
-                rating_overall = None  # no source → no score (anti-fabrication)
+    rating = parse_rating(parsed)
+    rating_overall = rating[0] if rating else None
 
     tags = [t for t in (parsed.get("tags") or []) if isinstance(t, str) and t in TAG_CATALOG]
     tags = list(dict.fromkeys([*tags, AGENT_TAG]))

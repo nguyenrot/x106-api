@@ -72,9 +72,12 @@ Khi không tìm được quán đạt chất lượng:
 - `amenities` / `tags`: CHỈ dùng slug trong hai danh mục được cung cấp; chọn
   thứ nguồn thực sự nhắc tới (2–4 tag là đẹp). Hệ thống sẽ tự thêm tag
   `tong-hop` — bạn không cần thêm.
-- `rating_overall` (0–5, lẻ 0.1): CHỈ điền khi một nguồn nêu điểm công khai
-  (ví dụ điểm Google Maps); khi đó bắt buộc kèm `rating_source` và nhắc nguồn
-  điểm đó trong bài. Không có nguồn → cả hai để `null`.
+- `rating_overall` (0–5, lẻ 0.1) + `rating_source`: **BẮT BUỘC tra điểm công
+  khai của quán** — search "<tên quán> Đà Nẵng" và đọc điểm trên listing
+  Google Maps (knowledge panel) hoặc trang review có chấm điểm. Điền ĐÚNG con
+  số nguồn nêu; `rating_source` ghi rõ (vd "Google Maps (~1.2k đánh giá)") và
+  nhắc nguồn điểm này trong bài. Chỉ để `null` khi thực sự không tìm thấy điểm
+  công khai nào. TUYỆT ĐỐI không tự chấm hay ước lượng.
 - `sources`: ≥ 1 URL http(s) thật bạn đã đọc. **Không bịa URL.**
 - `image_candidates` (0–4 mục): URL ảnh chụp THẬT của ĐÚNG quán này — chỉ lấy
   ảnh bạn thực sự thấy trên các trang nguồn / fanpage chính thức của quán.

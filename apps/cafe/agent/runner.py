@@ -147,19 +147,23 @@ def run_cafe_agent(
     # candidates only serve as hints. Skipped in dry-run (store_image writes
     # to the image repo). Never blocks publishing.
     try:
-        candidates, session_coords = search_cover_candidates(
+        search = search_cover_candidates(
             name=review.name,
             address=review.address,
             district=review.payload["district"],
             known=review.image_candidates,
         )
-        cover = find_cover(candidates, name=review.name)
+        cover = find_cover(search.candidates, name=review.name)
         if cover:
             review.payload["cover_image_url"] = cover["url"]
-        # Last-resort coords: the cover session may have seen the Maps listing.
-        if review.payload.get("lat") is None and session_coords:
-            review.payload["lat"], review.payload["lng"] = session_coords
+        # The cover session reads the Maps listing anyway — let it patch the
+        # facts the article session missed (coords, public score).
+        if review.payload.get("lat") is None and search.coords:
+            review.payload["lat"], review.payload["lng"] = search.coords
             log.info("coords for %r picked up by the cover session", review.name)
+        if review.payload.get("rating_overall") is None and search.rating:
+            review.payload["rating_overall"] = search.rating[0]
+            log.info("rating for %r picked up by the cover session (%s)", review.name, search.rating[1])
     except Exception:
         log.exception("cover pipeline failed — publishing without cover")
 
