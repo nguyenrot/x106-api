@@ -56,7 +56,10 @@ class Command(BaseCommand):
 
         prompt = _PROMPT.format(name=review.name, address=review.address, district=review.district)
         try:
-            result = run_agy(prompt, timeout_sec=240)
+            # Hunting direct image URLs makes agy browse several pages — give it
+            # more room than the article pipeline (this command runs outside
+            # Celery, so no task time limit applies).
+            result = run_agy(prompt, timeout_sec=480)
         except AgyError as e:
             raise CommandError(f"agy lỗi: {e}") from e
 
