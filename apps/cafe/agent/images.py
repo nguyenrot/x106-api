@@ -19,6 +19,7 @@ from __future__ import annotations
 import io
 import json
 import logging
+import time
 
 import httpx
 from django.conf import settings
@@ -81,32 +82,42 @@ def _dimensions_ok(raw: bytes) -> bool:
 def _gemini_verify(raw: bytes, mime: str, *, name: str, district: str, excerpt: str) -> bool:
     """True only when Gemini confirms the photo matches. Missing key / API error
     → False: the user's requirement is verify-then-attach, so unverified images
-    never ship."""
+    never ship. Transient 503/429 spikes get one retry — they killed an
+    otherwise-good candidate on the Lighthouse run."""
     api_key = settings.GEMINI_API_KEY
     if not api_key:
         log.warning("GEMINI_API_KEY unset — cannot verify cover photos, skipping cover")
         return False
-    try:
-        from google import genai
-        from google.genai import types as genai_types
 
-        client = genai.Client(api_key=api_key)
-        resp = client.models.generate_content(
-            model="gemini-2.5-flash",
-            contents=[
-                genai_types.Part.from_bytes(data=raw, mime_type=mime),
-                _VERIFY_PROMPT.format(name=name, district=district, excerpt=excerpt),
-            ],
-        )
-        text = (resp.text or "").strip()
-        start, end = text.find("{"), text.rfind("}")
-        verdict = json.loads(text[start : end + 1])
-        if not verdict.get("match"):
-            log.info("gemini rejected cover for %s: %s", name, verdict.get("reason"))
-        return bool(verdict.get("match"))
-    except Exception as exc:
-        log.warning("gemini cover verify failed (%s) — skipping candidate", exc)
-        return False
+    from google import genai
+    from google.genai import errors as genai_errors
+    from google.genai import types as genai_types
+
+    client = genai.Client(api_key=api_key)
+    contents = [
+        genai_types.Part.from_bytes(data=raw, mime_type=mime),
+        _VERIFY_PROMPT.format(name=name, district=district, excerpt=excerpt),
+    ]
+    for attempt in (1, 2):
+        try:
+            resp = client.models.generate_content(model="gemini-2.5-flash", contents=contents)
+            text = (resp.text or "").strip()
+            start, end = text.find("{"), text.rfind("}")
+            verdict = json.loads(text[start : end + 1])
+            if not verdict.get("match"):
+                log.info("gemini rejected cover for %s: %s", name, verdict.get("reason"))
+            return bool(verdict.get("match"))
+        except genai_errors.APIError as exc:
+            if attempt == 1 and getattr(exc, "code", None) in (429, 503):
+                log.info("gemini transient %s — retrying once in 12s", exc.code)
+                time.sleep(12)
+                continue
+            log.warning("gemini cover verify failed (%s) — skipping candidate", exc)
+            return False
+        except Exception as exc:
+            log.warning("gemini cover verify failed (%s) — skipping candidate", exc)
+            return False
+    return False
 
 
 def find_cover(
