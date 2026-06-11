@@ -21,7 +21,7 @@ from apps.cafe.serializers import CafeReviewWriteSerializer
 
 from .agy import AgyError, run_agy
 from .geocode import geocode_da_nang
-from .images import find_cover
+from .images import find_cover, search_cover_candidates
 from .prompts import build_write_review_prompt
 from .validate import SkipSignal, ValidatedReview, ValidationError, validate
 
@@ -125,33 +125,43 @@ def run_cafe_agent(
     if run is not None:
         run.cafe_name = review.name
 
-    # Best-effort coordinates; a miss publishes without a pin (map falls back
-    # to a text query on the frontend).
-    coords = geocode_da_nang(review.address, review.name)
-    if coords:
-        review.payload["lat"] = round(coords[0], 6)
-        review.payload["lng"] = round(coords[1], 6)
-        log.info("geocoded %r → %s", review.name, coords)
+    # Coordinates: the agent's own (from a Google Maps listing it saw) win;
+    # Nominatim is the fallback — it routinely misses Vietnamese alley
+    # addresses. A miss still publishes (map falls back to a text query).
+    if review.payload.get("lat") is not None:
+        log.info("using agent-supplied coords for %r", review.name)
     else:
-        log.info("no geocode hit for %r — publishing without coordinates", review.name)
+        coords = geocode_da_nang(review.address, review.name)
+        if coords:
+            review.payload["lat"] = round(coords[0], 6)
+            review.payload["lng"] = round(coords[1], 6)
+            log.info("geocoded %r → %s", review.name, coords)
+        else:
+            log.info("no geocode hit for %r — trying the cover session's coords", review.name)
 
     if dry_run:
         return RunResult("dry-run", payload=review)
 
-    # Best-effort cover: download → dimension check → Gemini verify → CDN.
-    # Skipped in dry-run (store_image writes to the image repo). Never blocks.
-    if review.image_candidates:
-        try:
-            cover = find_cover(
-                review.image_candidates,
-                name=review.name,
-                district=review.payload["district"],
-                excerpt=review.payload["excerpt"],
-            )
-            if cover:
-                review.payload["cover_image_url"] = cover["url"]
-        except Exception:
-            log.exception("cover pipeline failed — publishing without cover")
+    # Best-effort cover. ALWAYS its own agy session — the article session
+    # reliably skips image hunting (returns []), so don't depend on it; its
+    # candidates only serve as hints. Skipped in dry-run (store_image writes
+    # to the image repo). Never blocks publishing.
+    try:
+        candidates, session_coords = search_cover_candidates(
+            name=review.name,
+            address=review.address,
+            district=review.payload["district"],
+            known=review.image_candidates,
+        )
+        cover = find_cover(candidates, name=review.name)
+        if cover:
+            review.payload["cover_image_url"] = cover["url"]
+        # Last-resort coords: the cover session may have seen the Maps listing.
+        if review.payload.get("lat") is None and session_coords:
+            review.payload["lat"], review.payload["lng"] = session_coords
+            log.info("coords for %r picked up by the cover session", review.name)
+    except Exception:
+        log.exception("cover pipeline failed — publishing without cover")
 
     try:
         ser = CafeReviewWriteSerializer(data=review.payload)

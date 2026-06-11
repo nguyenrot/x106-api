@@ -1,18 +1,19 @@
 """Find + verify a real cover photo for an agent review — best-effort.
 
-The agent (agy web search) proposes image URLs it actually saw on pages about
-the cafe (`image_candidates`). We then:
+Image hunting runs as its OWN agy session (`search_cover_candidates`), separate
+from the article-writing session: when both jobs shared one prompt the model
+consistently prioritized the article and returned an empty candidate list. The
+dedicated session both finds and vets the photos (it must open each image and
+confirm it shows the right cafe), so the backend only has to:
 
-1. ask agy (one extra invocation) to OPEN each candidate and approve only real
-   photos of a cafe matching the review — no Gemini API key involved, the agy
-   CLI runs on its own Antigravity account,
-2. download the approved candidates in agy's preferred order (size/type capped),
-3. reject thumbnails/logos by dimension + aspect checks,
-4. re-host the first passing photo through the existing `store_image`
+1. download the candidates in the agent's preferred order (size capped),
+2. reject thumbnails/logos by dimension + aspect checks,
+3. re-host the first passing photo through the existing `store_image`
    optimizer → GitHub → jsDelivr CDN pipeline.
 
-Strict by design: no verified photo → no cover (the frontend fallback is fine).
-Never raises out of `find_cover` — a cover must never block publishing.
+No Gemini API key involved anywhere — the agy CLI runs on its own Antigravity
+account. Strict by design: nothing verified → no cover (frontend fallback is
+fine). `find_cover` never raises — a cover must never block publishing.
 """
 
 from __future__ import annotations
@@ -26,6 +27,7 @@ from PIL import Image
 from apps.core.uploads import store_image
 
 from .agy import AgyError, run_agy
+from .validate import parse_coords, parse_image_candidates
 
 log = logging.getLogger("apps.cafe.agent.images")
 
@@ -36,46 +38,62 @@ DOWNLOAD_UA = (
     "Mozilla/5.0 (compatible; cafe.kynguyen.cc cover-fetcher; phamkynguyen753@gmail.com)"
 )
 
-_PICK_PROMPT = """Bạn là biên tập viên ảnh của blog cafe.kynguyen.cc. Hãy MỞ XEM từng ảnh dưới đây (dùng khả năng xem web/ảnh của bạn) và chọn ảnh bìa.
+_SEARCH_PROMPT = """Bạn là trợ lý tìm ảnh cho blog cafe.kynguyen.cc. Dùng web search.
 
-Quán: {name} — khu vực {district}, Đà Nẵng.
-Mô tả bài viết: {excerpt}
+Nhiệm vụ: tìm 2–4 URL ảnh chụp THẬT của ĐÚNG quán cà phê sau ở Đà Nẵng:
 
-Danh sách ảnh ứng viên (đánh số từ 0):
-{candidates_block}
+- Tên quán: {name}
+- Địa chỉ: {address}
+- Khu vực: {district}
+{known_block}
+Quy tắc:
+- Chỉ lấy ảnh bạn thực sự thấy trên trang công khai viết về đúng quán này
+  (bài báo, blog review, fanpage chính thức). TUYỆT ĐỐI không bịa URL.
+- `url` phải trỏ thẳng tới file ảnh (jpg/png/webp), không phải trang HTML.
+- MỞ XEM từng ảnh trước khi liệt kê: chỉ trả về ảnh ĐẠT — ảnh chụp thực tế
+  (không phải logo, menu chữ, bản đồ, render 3D, chân dung cá nhân, watermark
+  che kín) và nội dung là không gian / mặt tiền / đồ uống của quán.
+- Xếp ảnh hợp làm ảnh bìa nhất lên đầu danh sách.
+- Tiện thể: nếu thấy TOẠ ĐỘ chính xác của quán (listing Google Maps / trang
+  nguồn ghi rõ) thì thêm "lat"/"lng" (số thập phân). Không chắc → để null.
+  **Không ước lượng, không bịa toạ độ.**
 
-Tiêu chí ĐẠT: ảnh chụp thực tế (không phải logo, menu chữ, bản đồ, ảnh render
-3D, chân dung cá nhân, ảnh watermark che kín) và nội dung là không gian /
-mặt tiền / đồ uống của một quán cà phê phù hợp mô tả trên.
-
-Trả về đúng MỘT JSON object, không giải thích gì thêm:
-{{"approved": [các index ĐẠT, xếp ảnh hợp làm bìa nhất lên trước], "reason": "ngắn gọn"}}
-Không ảnh nào đạt → {{"approved": [], "reason": "..."}}"""
+Trả về đúng một JSON object, không giải thích gì thêm:
+{{"image_candidates": [{{"url": "https://…", "page": "https://trang-nguon"}}], "lat": null, "lng": null}}
+Không tìm được ảnh chắc chắn đúng quán → {{"image_candidates": [], "lat": null, "lng": null}}"""
 
 
-def _agy_approve(candidates: list[dict], *, name: str, district: str, excerpt: str) -> list[int]:
-    """One agy call vets the whole candidate list. Returns approved indices in
-    preference order; [] on agy failure (strict: unverified images never ship)."""
-    block = "\n".join(
-        f"{i}. {c['url']}" + (f" (thấy trên trang: {c['page']})" if c.get("page") else "")
-        for i, c in enumerate(candidates)
-    )
-    prompt = _PICK_PROMPT.format(
-        name=name, district=district, excerpt=excerpt, candidates_block=block
+def search_cover_candidates(
+    *,
+    name: str,
+    address: str,
+    district: str,
+    known: list[dict] | None = None,
+) -> tuple[list[dict], tuple[float, float] | None]:
+    """Dedicated agy session: hunt + vet photos of THIS cafe, and pick up the
+    cafe's coordinates when a source states them (Google Maps listings beat
+    Nominatim on Vietnamese alley addresses). Returns (vetted candidates in
+    preference order, coords|None); ([], None) on miss or agy failure."""
+    known_block = ""
+    if known:
+        lines = "\n".join(f"  - {c['url']}" for c in known[:4])
+        known_block = (
+            f"\nỨng viên đã biết từ bước viết bài (kiểm tra lại, đạt thì được ưu tiên):\n{lines}\n"
+        )
+    prompt = _SEARCH_PROMPT.format(
+        name=name, address=address, district=district, known_block=known_block
     )
     try:
-        result = run_agy(prompt, timeout_sec=240)
+        # Hunting + opening images makes agy browse several pages — needs more
+        # room than the article session.
+        result = run_agy(prompt, timeout_sec=480)
     except AgyError as exc:
-        log.warning("agy cover vetting failed (%s) — skipping cover", exc)
-        return []
-    raw = result.parsed.get("approved")
-    if not isinstance(raw, list):
-        log.warning("agy cover vetting returned no 'approved' list: %r", result.parsed)
-        return []
-    approved = [i for i in raw if isinstance(i, int) and 0 <= i < len(candidates)]
-    if not approved:
-        log.info("agy rejected all cover candidates for %s: %s", name, result.parsed.get("reason"))
-    return approved
+        log.warning("agy cover search failed for %s: %s", name, exc)
+        return [], None
+    candidates = parse_image_candidates(result.parsed.get("image_candidates"))
+    if not candidates:
+        log.info("agy found no cover candidates for %s", name)
+    return candidates, parse_coords(result.parsed)
 
 
 def _download(url: str) -> bytes | None:
@@ -108,23 +126,10 @@ def _dimensions_ok(raw: bytes) -> bool:
     return ASPECT_RANGE[0] <= aspect <= ASPECT_RANGE[1]
 
 
-def find_cover(
-    candidates: list[dict],
-    *,
-    name: str,
-    district: str,
-    excerpt: str,
-) -> dict | None:
-    """agy vets the list once, then the first approved candidate that downloads
-    and passes dimension checks is re-hosted. Returns {"url", "source_page"}
-    or None."""
-    candidates = candidates[:4]
-    if not candidates:
-        return None
-
-    approved = _agy_approve(candidates, name=name, district=district, excerpt=excerpt)
-    for idx in approved:
-        cand = candidates[idx]
+def find_cover(candidates: list[dict], *, name: str) -> dict | None:
+    """First (already agent-vetted) candidate that downloads and passes
+    dimension checks is re-hosted. Returns {"url", "source_page"} or None."""
+    for cand in candidates[:4]:
         url = cand.get("url", "")
         raw = _download(url)
         if raw is None:

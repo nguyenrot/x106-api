@@ -19,9 +19,9 @@ from .models import CafeAgentRun
 logger = logging.getLogger("apps.cafe.agent")
 
 
-# Worst case: 2 agy attempts (300s each) + agy cover vetting (240s) + geocode
-# → needs more than the global 620s celery cap.
-@shared_task(name="apps.cafe.tasks.generate_cafe_review", time_limit=1060, soft_time_limit=1000)
+# Worst case: 2 article attempts (300s each) + dedicated cover-hunt session
+# (480s) + geocode/downloads → needs far more than the global 620s celery cap.
+@shared_task(name="apps.cafe.tasks.generate_cafe_review", time_limit=1500, soft_time_limit=1440)
 def generate_cafe_review(slot: str = "daily") -> str:
     """Research + publish one cafe review for the daily beat slot.
 
@@ -43,7 +43,7 @@ def generate_cafe_review(slot: str = "daily") -> str:
     return f"{result.status}:{result.reason}"
 
 
-@shared_task(name="apps.cafe.tasks.run_cafe_agent_now", time_limit=1060, soft_time_limit=1000)
+@shared_task(name="apps.cafe.tasks.run_cafe_agent_now", time_limit=1500, soft_time_limit=1440)
 def run_cafe_agent_now(run_id: str) -> str:
     """Execute a manually-requested run (admin "Tạo bài AI" button).
 

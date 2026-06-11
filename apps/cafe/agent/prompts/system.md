@@ -52,6 +52,8 @@ Khi viết được bài:
   "image_candidates": [
     { "url": "https://…/anh-quan.jpg", "page": "https://trang-nguon-chua-anh" }
   ],
+  "lat": 16.0612,
+  "lng": 108.2208,
   "confidence": 0.85
 }
 ```
@@ -81,5 +83,9 @@ Khi không tìm được quán đạt chất lượng:
     người, ảnh quá nhỏ. **Tuyệt đối không bịa URL ảnh.**
   - Không tìm được ảnh chắc chắn của đúng quán → để mảng rỗng `[]` (hệ thống
     sẽ tự kiểm chứng lại từng ảnh, sai quán sẽ bị loại).
+- `lat` / `lng` (số thập phân): toạ độ CHÍNH XÁC của quán, CHỈ điền khi bạn lấy
+  được từ listing Google Maps của quán hoặc trang nguồn ghi rõ toạ độ. Quán sẽ
+  được ghim lên bản đồ công khai — toạ độ sai rất lộ. Không chắc → để `null`
+  (hệ thống sẽ tự geocode từ địa chỉ). **Không ước lượng, không bịa.**
 - `confidence` (0.0–1.0): độ tự tin quán có thật + fact đúng + bài đạt. Thấp
   thì `skip` thay vì đăng bài yếu.

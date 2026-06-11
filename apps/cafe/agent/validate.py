@@ -14,6 +14,8 @@ from dataclasses import dataclass
 
 from apps.core.text import slugify_vi
 
+from .geocode import in_da_nang
+
 # Khu vực quen miệng của dân Đà Nẵng — the blog's `district` facet values.
 DISTRICTS = [
     "Hải Châu",
@@ -77,6 +79,18 @@ class ValidatedReview:
     sources: list[str]
     confidence: float
     image_candidates: list[dict]
+
+
+def parse_coords(parsed: dict) -> tuple[float, float] | None:
+    """Agent-supplied lat/lng — accepted only inside the Đà Nẵng bbox."""
+    try:
+        lat = float(parsed.get("lat"))  # type: ignore[arg-type]
+        lng = float(parsed.get("lng"))  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        return None
+    if not in_da_nang(lat, lng):
+        return None
+    return round(lat, 6), round(lng, 6)
 
 
 def parse_image_candidates(raw: object) -> list[dict]:
@@ -195,6 +209,8 @@ def validate(
         a for a in (parsed.get("amenities") or []) if isinstance(a, str) and a in AMENITY_CATALOG
     ]
 
+    coords = parse_coords(parsed)
+
     payload = {
         "name": name,
         "excerpt": excerpt[:300],
@@ -212,6 +228,8 @@ def validate(
         "cover_image_url": "",
         "gallery": [],
     }
+    if coords:
+        payload["lat"], payload["lng"] = coords
     return ValidatedReview(
         payload=payload,
         name=name,

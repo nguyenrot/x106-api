@@ -25,6 +25,10 @@ LAT_RANGE = (15.85, 16.35)
 LNG_RANGE = (107.85, 108.55)
 
 
+def in_da_nang(lat: float, lng: float) -> bool:
+    return LAT_RANGE[0] <= lat <= LAT_RANGE[1] and LNG_RANGE[0] <= lng <= LNG_RANGE[1]
+
+
 def _query(q: str) -> tuple[float, float] | None:
     resp = httpx.get(
         NOMINATIM_URL,
@@ -37,7 +41,7 @@ def _query(q: str) -> tuple[float, float] | None:
     if not rows:
         return None
     lat, lng = float(rows[0]["lat"]), float(rows[0]["lon"])
-    if not (LAT_RANGE[0] <= lat <= LAT_RANGE[1] and LNG_RANGE[0] <= lng <= LNG_RANGE[1]):
+    if not in_da_nang(lat, lng):
         log.info("geocode hit outside Đà Nẵng bbox (%s, %s) for %r — discarded", lat, lng, q)
         return None
     return lat, lng
