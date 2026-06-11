@@ -21,6 +21,7 @@ from apps.cafe.serializers import CafeReviewWriteSerializer
 
 from .agy import AgyError, run_agy
 from .geocode import geocode_da_nang
+from .images import find_cover
 from .prompts import build_write_review_prompt
 from .validate import SkipSignal, ValidatedReview, ValidationError, validate
 
@@ -136,6 +137,21 @@ def run_cafe_agent(
 
     if dry_run:
         return RunResult("dry-run", payload=review)
+
+    # Best-effort cover: download → dimension check → Gemini verify → CDN.
+    # Skipped in dry-run (store_image writes to the image repo). Never blocks.
+    if review.image_candidates:
+        try:
+            cover = find_cover(
+                review.image_candidates,
+                name=review.name,
+                district=review.payload["district"],
+                excerpt=review.payload["excerpt"],
+            )
+            if cover:
+                review.payload["cover_image_url"] = cover["url"]
+        except Exception:
+            log.exception("cover pipeline failed — publishing without cover")
 
     try:
         ser = CafeReviewWriteSerializer(data=review.payload)

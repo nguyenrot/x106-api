@@ -49,6 +49,9 @@ Khi viết được bài:
   "rating_source": "Google Maps (~1.2k đánh giá)",
   "content_md": "Nội dung markdown đầy đủ…",
   "sources": ["https://…", "https://…"],
+  "image_candidates": [
+    { "url": "https://…/anh-quan.jpg", "page": "https://trang-nguon-chua-anh" }
+  ],
   "confidence": 0.85
 }
 ```
@@ -71,5 +74,12 @@ Khi không tìm được quán đạt chất lượng:
   (ví dụ điểm Google Maps); khi đó bắt buộc kèm `rating_source` và nhắc nguồn
   điểm đó trong bài. Không có nguồn → cả hai để `null`.
 - `sources`: ≥ 1 URL http(s) thật bạn đã đọc. **Không bịa URL.**
+- `image_candidates` (0–4 mục): URL ảnh chụp THẬT của ĐÚNG quán này — chỉ lấy
+  ảnh bạn thực sự thấy trên các trang nguồn / fanpage chính thức của quán.
+  - `url` phải trỏ thẳng tới file ảnh (jpg/png/webp), không phải trang HTML.
+  - Ưu tiên ảnh không gian/mặt tiền/đồ uống; tránh logo, menu chữ, chân dung
+    người, ảnh quá nhỏ. **Tuyệt đối không bịa URL ảnh.**
+  - Không tìm được ảnh chắc chắn của đúng quán → để mảng rỗng `[]` (hệ thống
+    sẽ tự kiểm chứng lại từng ảnh, sai quán sẽ bị loại).
 - `confidence` (0.0–1.0): độ tự tin quán có thật + fact đúng + bài đạt. Thấp
   thì `skip` thay vì đăng bài yếu.

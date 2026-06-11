@@ -76,6 +76,22 @@ class ValidatedReview:
     address: str
     sources: list[str]
     confidence: float
+    image_candidates: list[dict]
+
+
+def parse_image_candidates(raw: object) -> list[dict]:
+    """Normalize the agent's image_candidates — http(s) URLs only, max 4."""
+    out: list[dict] = []
+    for item in raw if isinstance(raw, list) else []:
+        if not isinstance(item, dict):
+            continue
+        url = str(item.get("url") or "").strip()
+        if not url.startswith(("http://", "https://")):
+            continue
+        out.append({"url": url, "page": str(item.get("page") or "").strip()})
+        if len(out) >= 4:
+            break
+    return out
 
 
 def _word_count(text: str) -> int:
@@ -202,4 +218,5 @@ def validate(
         address=address,
         sources=sources,
         confidence=confidence,
+        image_candidates=parse_image_candidates(parsed.get("image_candidates")),
     )
