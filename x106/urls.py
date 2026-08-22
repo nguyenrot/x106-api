@@ -3,6 +3,7 @@
 from django.contrib import admin
 from django.http import HttpResponse
 from django.urls import include, path
+from django.views.generic import RedirectView
 from django.views.decorators.cache import cache_control
 from drf_spectacular.views import (
     SpectacularAPIView,
@@ -17,6 +18,8 @@ def robots_txt(_request):
 
 
 urlpatterns = [
+    # A bare https://api.kynguyen.cc/ used to 404 — send humans to the Swagger UI.
+    path("", RedirectView.as_view(url="/api/docs/", permanent=False)),
     path("robots.txt", robots_txt),
     path("admin/", admin.site.urls),
     path("api/v1/", include("apps.core.urls")),
