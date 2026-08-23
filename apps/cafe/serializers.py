@@ -112,6 +112,12 @@ class CafeReviewListSerializer(serializers.ModelSerializer):
         fields = [
             "id", "slug", "name", "excerpt", "district",
             "price_level", "price_note", "tags",
+            # `amenities` rides along so the index can filter on it in the
+            # browser. Django's public list endpoint has no amenity query param
+            # and the whole published feed is under a hundred rows, so adding a
+            # JSON-membership filter server-side would cost a round-trip per
+            # checkbox to save nothing.
+            "amenities",
             "rating_overall", "cover_image_url", "cover_riso",
             "lat", "lng",
             "visited_at", "published_at",
