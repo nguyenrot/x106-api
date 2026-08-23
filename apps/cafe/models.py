@@ -118,3 +118,62 @@ class CafeAgentRun(models.Model):
 
     def __str__(self) -> str:  # pragma: no cover - admin display only
         return f"{self.slot} {self.status} {self.cafe_name or '—'}"
+
+
+class CafeImage(models.Model):
+    """One uploaded photo + the risograph variants derived from it.
+
+    The colour WebP that `apps.core.uploads.store_image` produces is the
+    archival master: it is what `CafeReview.cover_image_url` / `.gallery` point
+    at, and it is the input `regenerate_riso_images` re-reads when the ink pair
+    changes. The duotone files are pure derivatives — safe to delete, always
+    reproducible.
+
+    Keyed on `source_url` rather than on a FK to `CafeReview` because a photo is
+    stored the moment it is uploaded, which is before the review it will belong
+    to exists (and an in-body markdown image never belongs to one field at all).
+    """
+
+    id = models.CharField(primary_key=True, max_length=36, default=new_id, editable=False)
+
+    # The colour master, exactly as it appears in review fields — this is the
+    # join key the serializers look variants up by.
+    source_url = models.URLField(max_length=500, unique=True)
+    source_path = models.CharField(max_length=300, blank=True, default="")
+
+    riso_url = models.URLField(max_length=500, blank=True, default="")
+    riso_2x_url = models.URLField(max_length=500, blank=True, default="")
+    width = models.PositiveIntegerField(null=True, blank=True)   # of the 1x variant
+    height = models.PositiveIntegerField(null=True, blank=True)
+
+    # apps.core.riso.palette_key() at render time. A row whose key no longer
+    # matches the current one was rendered with a superseded palette or screen.
+    palette_key = models.CharField(max_length=16, blank=True, default="", db_index=True)
+
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        db_table = "cafe_images"
+        ordering = ["-created_at"]
+
+    def __str__(self) -> str:  # pragma: no cover - admin display only
+        return self.source_url
+
+    @property
+    def is_stale(self) -> bool:
+        """True when the stored variants predate the current pipeline settings."""
+        from apps.core.riso import palette_key
+
+        return self.palette_key != palette_key()
+
+    def as_variant(self) -> dict | None:
+        """The compact `{src, src2x, w, h}` shape the frontend consumes."""
+        if not self.riso_url:
+            return None
+        return {
+            "src": self.riso_url,
+            "src2x": self.riso_2x_url or self.riso_url,
+            "w": self.width,
+            "h": self.height,
+        }

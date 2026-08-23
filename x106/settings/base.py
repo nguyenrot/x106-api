@@ -143,6 +143,15 @@ CAFE_IMAGE_GITHUB_TOKEN = env.str("CAFE_IMAGE_GITHUB_TOKEN", default="")
 CAFE_IMAGE_GITHUB_REPO = env.str("CAFE_IMAGE_GITHUB_REPO", default="nguyenrot/cafe-image")
 CAFE_IMAGE_GITHUB_BRANCH = env.str("CAFE_IMAGE_GITHUB_BRANCH", default="main")
 
+# Origin prepended to a local MEDIA_URL path when an image URL has to work from
+# another host (the frontends are on *.kynguyen.cc, the API is not). Only the
+# local-storage fallback needs it — jsDelivr URLs are already absolute. Kept as
+# a setting rather than derived from the request because the same URLs are
+# minted from Celery tasks and management commands, where there is no request,
+# and the value has to match byte-for-byte across all three (it is the join key
+# between `cafe_reviews` and `cafe_images`).
+PUBLIC_MEDIA_ORIGIN = env.str("PUBLIC_MEDIA_ORIGIN", default="https://api.kynguyen.cc")
+
 # ─── Service tokens ───────────────────────────────────────────────────────
 #
 # Long-lived tokens for non-human callers (cron agents). We only ever store

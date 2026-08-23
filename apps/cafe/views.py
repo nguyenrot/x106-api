@@ -143,7 +143,14 @@ class AdminCafeAgentRunViewSet(viewsets.ReadOnlyModelViewSet):
 
 
 class AdminCafeImageUploadView(APIView):
-    """POST /api/v1/admin/cafe/uploads/image — optimize + store, return its URL."""
+    """POST /api/v1/admin/cafe/uploads/image — optimize + store, return its URL.
+
+    Also renders the risograph duotone variants (see `apps.cafe.imaging`), so
+    the response carries `riso_url` / `riso_2x_url` alongside the colour master.
+    That pass costs a few hundred ms per photo; it stays inline rather than
+    going to Celery because the editor shows the result immediately and a
+    background job would leave a freshly pasted image un-duotoned on screen.
+    """
 
     permission_classes = [IsAdminToken]
     parser_classes = [MultiPartParser, FormParser]
@@ -151,7 +158,9 @@ class AdminCafeImageUploadView(APIView):
     MAX_BYTES = 10 * 1024 * 1024  # 10 MB raw upload
 
     def post(self, request):
-        from apps.core.uploads import DEFAULT_MAX_DIM, NotAnImage, absolute_https_url, store_image
+        from apps.core.uploads import DEFAULT_MAX_DIM, NotAnImage
+
+        from .imaging import store_review_image
 
         upload = request.FILES.get("file")
         if upload is None:
@@ -166,9 +175,8 @@ class AdminCafeImageUploadView(APIView):
         max_dim = max(64, min(max_dim, 4096))
 
         try:
-            meta = store_image(upload.read(), prefix="cafe", max_dim=max_dim)
+            meta = store_review_image(upload.read(), prefix="cafe", max_dim=max_dim)
         except NotAnImage:
             return Response({"error": "File không phải ảnh hợp lệ."}, status=status.HTTP_400_BAD_REQUEST)
 
-        meta["url"] = absolute_https_url(request, meta["url"])
         return Response(meta, status=status.HTTP_201_CREATED)

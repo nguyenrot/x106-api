@@ -3,10 +3,12 @@ from __future__ import annotations
 import markdown as md
 import nh3
 from django.utils.timezone import now
+from drf_spectacular.utils import extend_schema_field
 from rest_framework import serializers
 
 from apps.core.text import slugify_vi
 
+from .imaging import riso_map
 from .models import CafeAgentRun, CafeReview
 
 
@@ -69,22 +71,66 @@ def _render_md(text: str) -> str:
 
 # ── Public read serializers ─────────────────────────────────────────────────
 
+class RisoVariantSerializer(serializers.Serializer):
+    """Read-only shape of one stored duotone pair (see `apps.cafe.imaging`).
+
+    Declared so the OpenAPI schema describes `cover_riso` / `gallery_riso`
+    properly instead of falling back to a bare object. Never parses input —
+    variants are derived at upload time, never posted.
+    """
+
+    src = serializers.URLField(help_text="1x duotone WebP")
+    src2x = serializers.URLField(help_text="Retina duotone WebP")
+    w = serializers.IntegerField(allow_null=True)
+    h = serializers.IntegerField(allow_null=True)
+
+
+class _RisoCoverListSerializer(serializers.ListSerializer):
+    """Fills every row's `cover_riso` from a single query.
+
+    Resolving the variant inside the child serializer would issue one lookup per
+    review, and the public feed serializes the whole published list in one
+    response — a textbook N+1 against a table that is only ever read by URL.
+    """
+
+    def to_representation(self, data):
+        rows = super().to_representation(data)
+        variants = riso_map(row.get("cover_image_url") for row in rows)
+        for row in rows:
+            row["cover_riso"] = variants.get(row.get("cover_image_url") or "")
+        return rows
+
+
 class CafeReviewListSerializer(serializers.ModelSerializer):
     """Compact shape for the public feed/grid."""
 
+    cover_riso = serializers.SerializerMethodField()
+
     class Meta:
         model = CafeReview
+        list_serializer_class = _RisoCoverListSerializer
         fields = [
             "id", "slug", "name", "excerpt", "district",
             "price_level", "price_note", "tags",
-            "rating_overall", "cover_image_url",
+            "rating_overall", "cover_image_url", "cover_riso",
             "lat", "lng",
             "visited_at", "published_at",
         ]
 
+    @extend_schema_field(RisoVariantSerializer(allow_null=True))
+    def get_cover_riso(self, obj):
+        """Bulk-resolved by the parent when serializing a list; a standalone
+        instance (rare — the detail view has its own serializer) pays one query."""
+        if isinstance(self.parent, _RisoCoverListSerializer):
+            return None  # the parent overwrites this once the page is built
+        return riso_map([obj.cover_image_url]).get(obj.cover_image_url or "")
+
 
 class CafeReviewDetailSerializer(serializers.ModelSerializer):
     """Full shape for a single review page (serves rendered HTML)."""
+
+    cover_riso = serializers.SerializerMethodField()
+    gallery_riso = serializers.SerializerMethodField()
 
     class Meta:
         model = CafeReview
@@ -93,10 +139,34 @@ class CafeReviewDetailSerializer(serializers.ModelSerializer):
             "address", "district", "lat", "lng",
             "price_level", "price_note", "opening_hours", "amenities", "tags",
             "rating_overall", "rating_drink", "rating_space", "rating_price", "rating_service",
-            "cover_image_url", "gallery",
+            "cover_image_url", "cover_riso",
+            "gallery", "gallery_riso",
             "content_html",
             "is_published", "visited_at", "published_at", "created_at", "updated_at",
         ]
+
+    def _variants(self, obj) -> dict:
+        """Duotone variants for the cover *and* every gallery shot, in one query.
+
+        Memoized on the serializer so the two field callbacks below share a
+        single lookup instead of hitting the table twice per review.
+        """
+        cached = getattr(self, "_variant_cache", None)
+        if cached is None or cached[0] is not obj:
+            cached = (obj, riso_map([obj.cover_image_url, *(obj.gallery or [])]))
+            self._variant_cache = cached
+        return cached[1]
+
+    @extend_schema_field(RisoVariantSerializer(allow_null=True))
+    def get_cover_riso(self, obj):
+        return self._variants(obj).get(obj.cover_image_url or "")
+
+    @extend_schema_field(RisoVariantSerializer(many=True))
+    def get_gallery_riso(self, obj):
+        """Index-aligned with `gallery`, null wherever a photo predates the
+        pipeline — the frontend falls back to the colour master at that index."""
+        variants = self._variants(obj)
+        return [variants.get(url) for url in (obj.gallery or [])]
 
 
 class AdminCafeReviewListSerializer(serializers.ModelSerializer):

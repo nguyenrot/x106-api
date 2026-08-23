@@ -25,7 +25,7 @@ from dataclasses import dataclass, field
 import httpx
 from PIL import Image
 
-from apps.core.uploads import store_image
+from apps.cafe.imaging import store_review_image
 
 from .agy import AgyError, run_agy
 from .validate import parse_coords, parse_image_candidates, parse_rating
@@ -154,15 +154,14 @@ def find_cover(candidates: list[dict], *, name: str) -> dict | None:
             log.info("cover candidate rejected (dimensions): %s", url)
             continue
         try:
-            meta = store_image(raw, prefix="cafe", max_dim=1600)
+            # Renders the riso duotone variants too, so an agent-written review
+            # gets the same treatment as a hand-uploaded photo. `store_review_image`
+            # already absolutizes the local-storage fallback's /media path.
+            meta = store_review_image(raw, prefix="cafe", max_dim=1600)
         except Exception as exc:
-            log.warning("store_image failed for %s: %s", url, exc)
+            log.warning("store_review_image failed for %s: %s", url, exc)
             continue
         stored = meta["url"]
-        # Local-storage fallback returns a relative /media path that only
-        # resolves on the API host — absolutize it (jsDelivr URLs pass through).
-        if stored.startswith("/"):
-            stored = f"https://api.kynguyen.cc{stored}"
         log.info("cover accepted for %s: %s (from %s)", name, stored, cand.get("page") or url)
         return {"url": stored, "source_page": cand.get("page", "")}
     return None

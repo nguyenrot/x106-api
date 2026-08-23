@@ -63,9 +63,16 @@ def github_image_enabled() -> bool:
     )
 
 
-def push_to_github(path: str, content: bytes, *, message: str | None = None) -> str:
+def push_to_github(path: str, content: bytes, *, message: str | None = None,
+                   overwrite: bool = False) -> str:
     """Create `path` in the image repo via the GitHub Contents API; return its
-    jsDelivr CDN URL. Filenames are uuid-unique so this is always a create.
+    jsDelivr CDN URL. Upload filenames are uuid-unique, so that call is always a
+    create.
+
+    `overwrite=True` makes the write idempotent by looking up the existing
+    blob's sha first — the Contents API rejects a create over an existing path
+    with a 422. Only derived files need it: re-running the duotone pass with an
+    unchanged palette should be a no-op, not an error.
 
     Raises on transport / HTTP error so the caller can fall back to local storage.
     """
@@ -88,10 +95,59 @@ def push_to_github(path: str, content: bytes, *, message: str | None = None) -> 
         "User-Agent": "cafe-image/1.0",
     }
     with httpx.Client(timeout=_GITHUB_TIMEOUT) as c:
+        if overwrite:
+            existing = c.get(url, params={"ref": branch}, headers=headers)
+            if existing.status_code == 200:
+                payload["sha"] = existing.json()["sha"]
         r = c.put(url, json=payload, headers=headers)
         r.raise_for_status()
 
     return f"https://cdn.jsdelivr.net/gh/{repo}@{branch}/{path}"
+
+
+def absolutize_media_url(url: str) -> str:
+    """Make a stored image URL usable from another host.
+
+    The local-storage fallback hands back a host-relative `/media/...` path that
+    only resolves on the API origin, but these URLs get embedded in JSON that a
+    different frontend host renders. jsDelivr URLs are already absolute and pass
+    straight through.
+
+    Uses `PUBLIC_MEDIA_ORIGIN` rather than `absolute_https_url`'s request-derived
+    host on purpose: the cafe upload path also mints these URLs from the agent's
+    Celery task and from `regenerate_riso_images`, where there is no request, and
+    all three have to produce the SAME string — it is the key `cafe_images` is
+    joined to `cafe_reviews` by.
+    """
+    if not url or url.startswith(("http://", "https://")):
+        return url
+
+    from django.conf import settings
+
+    return f"{settings.PUBLIC_MEDIA_ORIGIN.rstrip('/')}{url}"
+
+
+def store_bytes(content: bytes, path: str, *, message: str | None = None) -> str:
+    """Persist already-encoded bytes at an explicit path; return the public URL.
+
+    `store_image` owns the decode/downscale/re-encode path for a raw upload.
+    This is its counterpart for derivatives the caller has already rendered (the
+    riso duotone variants), where re-optimizing would mean decoding and
+    re-compressing a file that was written to spec.
+
+    Writes are idempotent: unlike an upload, a derived path is deterministic, so
+    the same path can legitimately be written twice.
+    """
+    if github_image_enabled():
+        try:
+            return push_to_github(path, content, message=message, overwrite=True)
+        except Exception as exc:  # noqa: BLE001 — a CDN hiccup must not lose the file
+            log.warning("github push failed (%s); falling back to local storage: %s", path, exc)
+
+    if default_storage.exists(path):
+        default_storage.delete(path)
+    saved_path = default_storage.save(path, ContentFile(content))
+    return default_storage.url(saved_path)
 
 
 def optimize_image(raw: bytes, *, max_dim: int = DEFAULT_MAX_DIM) -> tuple[bytes, int, int]:
