@@ -60,6 +60,21 @@ def test_admin_content_section_delete_requires_admin():
     assert response.status_code in (401, 403)
 
 
+def test_retired_app_routes_are_gone():
+    """journal / habits / ledger / studio were unmounted 2026-08-29. 404 = gone."""
+    client = Client()
+    for path in (
+        "/api/v1/journal/vibes",
+        "/api/v1/habits",
+        "/api/v1/habit-logs",
+        "/api/v1/ledger/accounts",
+        "/api/v1/artworks",
+        "/api/v1/public/artworks/this-token-does-not-exist",
+    ):
+        response = client.get(path)
+        assert response.status_code == 404, path
+
+
 def test_admin_login_endpoint_exists():
     client = Client()
     response = client.post(

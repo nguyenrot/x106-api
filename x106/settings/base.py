@@ -32,13 +32,9 @@ INSTALLED_APPS = [
     "drf_spectacular",
     "apps.core",
     "apps.accounts",
-    "apps.journal",
-    "apps.habits",
     "apps.content",
-    "apps.ledger",
     "apps.console",
     "apps.quotes",
-    "apps.studio",
     "apps.cafe",
 ]
 
@@ -231,22 +227,13 @@ SPECTACULAR_SETTINGS = {
 
 CORS_ALLOWED_ORIGINS = [
     "http://localhost:3000",
-    "http://localhost:3001",
-    "http://localhost:3002",
     "http://localhost:3003",
-    "http://localhost:3004",
-    "http://localhost:3005",
     "http://localhost:3006",
-    "http://localhost:3009",
     "http://localhost:3010",
     "https://kynguyen.cc",
     "https://me.kynguyen.cc",
-    "https://journal.kynguyen.cc",
-    "https://art.kynguyen.cc",
     "https://admin.kynguyen.cc",
-    "https://ledger.kynguyen.cc",
     "https://quotes.kynguyen.cc",
-    "https://habits.kynguyen.cc",
     "https://cafe.kynguyen.cc",
 ]
 CORS_ALLOW_CREDENTIALS = True
@@ -271,12 +258,6 @@ CELERY_BEAT_SCHEDULE = {
     "console-cleanup-old-execs": {
         "task": "apps.console.tasks.cleanup_old_execs",
         "schedule": 3600.0,
-    },
-    # 23:50 giờ Việt Nam — auto-add một record chi 200.000đ cho mọi
-    # LedgerAccount chưa có khoản chi nào trong ngày.
-    "ledger-auto-expense-no-spending": {
-        "task": "apps.ledger.tasks.auto_expense_for_missing_days",
-        "schedule": crontab(hour=23, minute=50),
     },
     # 08:30 giờ Việt Nam — agent tổng hợp 1 bài review quán cà phê Đà Nẵng
     # (no-op khi CAFE_AGENT_ENABLED=false).
