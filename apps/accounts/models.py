@@ -7,6 +7,7 @@ Schema notes (matches the Go service's CREATE TABLE in internal/database/schema.
   - password_hash   VARCHAR(255)        — bcrypt $2a$10$...
   - display_name    VARCHAR(100) NULL
   - avatar_url      VARCHAR(500) NULL
+  - google_sub      VARCHAR(255) NULL UNIQUE — added by migration 0004
   - created_at      DATETIME     DEFAULT CURRENT_TIMESTAMP
   - updated_at      DATETIME     DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
 
@@ -63,6 +64,9 @@ class User(AbstractBaseUser, PermissionsMixin):
     password = models.CharField(max_length=255, db_column="password_hash")
     display_name = models.CharField(max_length=100, null=True, blank=True)
     avatar_url = models.CharField(max_length=500, null=True, blank=True)
+    # Google's `sub` claim once the account has signed in with Google — the identity key
+    # that survives the user changing their Google address. NULL for password-only rows.
+    google_sub = models.CharField(max_length=255, null=True, blank=True, unique=True)
     is_staff = models.BooleanField(default=False)
     is_active = models.BooleanField(default=True)
     created_at = models.DateTimeField(auto_now_add=True)

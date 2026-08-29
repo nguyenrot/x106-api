@@ -78,6 +78,7 @@ apps/
   journal/      # Vibe + VibeViewSet (today, stats, upsert)
   ledger/       # personal finance (transactions, categories, budgets)
   content/      # SiteContent (public + admin upsert)
+  vandao/       # Cloud save for the Vấn Đạo game — one JSON blob per player, revision-guarded
   console/      # VPS console + AI ops assistant (OpenCode Zen + paramiko SSH); see infra/console-setup.md
 terminal_ws/    # Standalone async daemon — WebSocket bridge to a local PTY. Runs as systemd `x106-terminal-ws` (User=root, cwd=/, :7682). Auth via x106_admin JWT cookie. Spawned shell is a root login shell — no sudoers sandbox; same risk profile as the previous ttyd. Powers the admin app's Terminal tab via xterm.js. Setup in infra/terminal-ws-setup.md.
 infra/systemd/  # production unit files (x106-api, x106-celery-worker, x106-celery-beat, x106-terminal-ws)
@@ -113,6 +114,14 @@ Both signed with `JWT_SECRET` (HS256). Cookie reading lives in `apps.accounts.au
 
 **Admin authentication is via Django superuser** — `python manage.py createsuperuser` once, then log in with that username/password against `POST /api/v1/admin/login`. The legacy `ADMIN_USERNAME` / `ADMIN_PASSWORD_HASH` env vars are gone.
 
+**Sign in with Google** (`apps.accounts.google`, `POST /auth/google`) — the browser runs Google's popup code flow and posts a one-shot authorization code; the server exchanges it for an `id_token` using `GOOGLE_OAUTH_CLIENT_SECRET` and reads the identity out of that. Ported from the same flow in lumi-backend, so keep the two in sync when either changes.
+
+- The `id_token` signature is **deliberately not verified** — we fetched the token ourselves over TLS from Google's token endpoint (OIDC Core §3.1.3.7 exempts exactly this case), which is what keeps `cryptography`/`google-auth` out of the dependency list. `iss`/`aud`/`exp`/`email_verified` **are** checked, because those catch the failure that actually happens: a swapped or misconfigured OAuth client. If this ever moves to One-Tap, where the *browser* hands us a credential, full signature verification becomes mandatory.
+- Account resolution: `users.google_sub` (migration `accounts.0004`) → verified email → new account with an unusable password. Matching by email is required, not optional: without it every player who already has a username/password account would end up with a second one.
+- `users.email` has **no unique constraint** (it predates Django and is NULL for most rows), so an address matching two rows is refused rather than resolved to an arbitrary one.
+- One OAuth client is shared by every X106 frontend: authorized JavaScript origins list each frontend, and there must be **no** authorized redirect URI (the popup flow exchanges with `redirect_uri=postmessage`). Blank env → `503`, and frontends hide the button.
+- Throttled at `30/hour` per IP via `ScopedRateThrottle` (scope `auth_google`) — every call spends an outbound request to Google.
+
 ### VPS console + AI ops assistant (`apps.console`)
 
 The AI surface in the ecosystem. AI calls run through the **Google Gemini API** via the official `google-genai` SDK, default model `gemini-2.5-flash`; shell commands run via **paramiko SSH** to a dedicated `x106-ops` user on the same VPS — never subprocess on the api service itself.
@@ -139,9 +148,9 @@ One-time prod setup (x106-ops user, sshd keys, sudoers whitelist, env vars) live
 
 ### Routes (mounted under `/api/v1`)
 
-Public: `GET /health`, `POST /auth/{register,login,logout}`, `GET /content/{app}/{section}`, `POST /admin/{login,logout}`.
+Public: `GET /health`, `POST /auth/{register,login,google,logout}`, `GET /content/{app}/{section}`, `POST /admin/{login,logout}`.
 
-User-auth (cookie x106_session OR Bearer): `GET /users/me`, `GET|POST /journal/vibes`, `GET /journal/vibes/today`, `GET /journal/vibes/stats`, plus `/ledger/*`.
+User-auth (cookie x106_session OR Bearer): `GET /users/me`, `GET|PUT /vandao/save`, `GET|POST /journal/vibes`, `GET /journal/vibes/today`, `GET /journal/vibes/stats`, plus `/ledger/*`.
 
 Admin-auth (cookie x106_admin OR Bearer with `role:admin`):
 - `GET /admin/content/{app}`, `PUT /admin/content/{app}/{section}`

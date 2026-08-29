@@ -36,6 +36,7 @@ INSTALLED_APPS = [
     "apps.console",
     "apps.quotes",
     "apps.cafe",
+    "apps.vandao",
 ]
 
 MIDDLEWARE = [
@@ -129,6 +130,17 @@ X106_ADMIN_COOKIE = "x106_admin"
 X106_SESSION_COOKIE_MAX_AGE = int(timedelta(days=30).total_seconds())
 X106_ADMIN_COOKIE_MAX_AGE = int(timedelta(hours=8).total_seconds())
 
+# ─── Sign in with Google (apps.accounts.google) ───────────────────────────
+#
+# One "Web application" OAuth client shared by every X106 frontend that offers
+# Google sign-in. Its authorized JavaScript origins must list each of those
+# origins; it must have NO authorized redirect URI — the popup code flow
+# exchanges with `redirect_uri=postmessage`. Blank disables POST /auth/google
+# (503) and the frontends hide the button.
+GOOGLE_OAUTH_CLIENT_ID = env.str("GOOGLE_OAUTH_CLIENT_ID", default="")
+GOOGLE_OAUTH_CLIENT_SECRET = env.str("GOOGLE_OAUTH_CLIENT_SECRET", default="")
+GOOGLE_TOKEN_ENDPOINT = "https://oauth2.googleapis.com/token"
+
 # ─── Public image hosting (apps.cafe uploads) ─────────────────────────────
 #
 # Cafe review covers/gallery are pushed to a public GitHub repo and served via
@@ -202,6 +214,9 @@ REST_FRAMEWORK = {
     "DEFAULT_PAGINATION_CLASS": "rest_framework.pagination.LimitOffsetPagination",
     "PAGE_SIZE": 50,
     "DEFAULT_SCHEMA_CLASS": "drf_spectacular.openapi.AutoSchema",
+    # Opt-in per view (ScopedRateThrottle is not a default class) — currently only
+    # POST /auth/google, which spends an outbound call to Google on every request.
+    "DEFAULT_THROTTLE_RATES": {"auth_google": "30/hour"},
 }
 
 SIMPLE_JWT = {

@@ -38,6 +38,12 @@ class RegisterSerializer(serializers.Serializer):
         )
 
 
+class GoogleAuthSerializer(serializers.Serializer):
+    """The one-shot authorization code from Google's popup code flow."""
+
+    code = serializers.CharField(trim_whitespace=True, max_length=2048, write_only=True)
+
+
 class UserTokenObtainSerializer(TokenObtainPairSerializer):
     """Adds `username` to JWT claims on top of simplejwt's defaults."""
 

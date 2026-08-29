@@ -7,18 +7,22 @@ from datetime import timedelta
 from django.conf import settings
 from django.contrib.auth import authenticate
 from django.db.models import Q
+from django.utils import timezone
 from rest_framework import status, viewsets
 from rest_framework.decorators import action
 from rest_framework.permissions import AllowAny, IsAuthenticated
 from rest_framework.response import Response
+from rest_framework.throttling import ScopedRateThrottle
 from rest_framework.views import APIView
 from rest_framework_simplejwt.tokens import AccessToken
 
 from apps.core.permissions import IsAdminToken
 
+from . import google
 from .models import User
 from .serializers import (
     AdminLoginSerializer,
+    GoogleAuthSerializer,
     RegisterSerializer,
     UserSerializer,
     UserTokenObtainSerializer,
@@ -82,6 +86,49 @@ class LoginView(APIView):
             )
         token = _user_token(user)
         response = Response({"user": UserSerializer(user).data, "token": token})
+        _set_cookie(response, settings.X106_SESSION_COOKIE, token, settings.X106_SESSION_COOKIE_MAX_AGE)
+        return response
+
+
+class GoogleAuthView(APIView):
+    """POST /api/v1/auth/google — sign in (or sign up) with a Google auth code.
+
+    Same `{user, token}` envelope as login/register, so callers have one
+    session-establishing shape to handle. Throttled because every call makes an
+    outbound request to Google's token endpoint.
+    """
+
+    permission_classes = [AllowAny]
+    authentication_classes: list = []
+    throttle_classes = [ScopedRateThrottle]
+    throttle_scope = "auth_google"
+
+    def post(self, request):
+        serializer = GoogleAuthSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        try:
+            user, created = google.sign_in(serializer.validated_data["code"])
+        except google.GoogleNotConfigured:
+            return Response(
+                {"error": "Google sign-in is not configured on this server."},
+                status=status.HTTP_503_SERVICE_UNAVAILABLE,
+            )
+        except google.GoogleAuthError as failure:
+            return Response({"error": failure.message}, status=status.HTTP_400_BAD_REQUEST)
+
+        if not user.is_active:
+            return Response(
+                {"error": "Tài khoản này đã bị vô hiệu hoá."},
+                status=status.HTTP_403_FORBIDDEN,
+            )
+        user.last_login = timezone.now()
+        user.save(update_fields=["last_login"])
+
+        token = _user_token(user)
+        response = Response(
+            {"user": UserSerializer(user).data, "token": token, "created": created},
+            status=status.HTTP_201_CREATED if created else status.HTTP_200_OK,
+        )
         _set_cookie(response, settings.X106_SESSION_COOKIE, token, settings.X106_SESSION_COOKIE_MAX_AGE)
         return response
 
