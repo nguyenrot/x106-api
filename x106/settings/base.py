@@ -36,7 +36,6 @@ INSTALLED_APPS = [
     "apps.console",
     "apps.quotes",
     "apps.cafe",
-    "apps.vandao",
 ]
 
 MIDDLEWARE = [
