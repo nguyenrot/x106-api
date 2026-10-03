@@ -2,7 +2,7 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
-This is the **Python (Django + DRF + Celery)** API backend for the X106 ecosystem. Port 4000, served at `api.kynguyen.cc`. The repo lives at `/var/www/api` on the VPS and runs as the systemd unit `x106-api.service`. Three siblings — `x106-celery-worker.service` (AI ops chat + SSH exec), `x106-celery-beat.service` (recovery + cleanup schedule), and `x106-terminal-ws.service` (WebSocket-to-PTY bridge on `127.0.0.1:7682` for the admin Terminal tab; setup in `infra/terminal-ws-setup.md`) — replace the old Go `x106-worker` + ttyd combo. The parent ecosystem doc is at `../CLAUDE.md` — read it first for context on the surrounding apps and shared design system.
+This is the **Python (Django + DRF + Celery)** API backend for the X106 ecosystem. Port 4000, served at `api.kynguyen.cc`. The repo lives at `/var/www/api` on the VPS and runs as the systemd unit `x106-api.service`. Three siblings — `x106-celery-worker.service` (AI ops chat + SSH exec), `x106-celery-beat.service` (recovery + cleanup schedule), `x106-terminal-ws.service` (WebSocket bridge on `127.0.0.1:7682` that attaches the admin console's xterm.js to a tmux session; setup in `infra/terminal-ws-setup.md`) and `x106-tmux.service` (the tmux server holding those shells — deliberately **not** restarted by deploys) — replace the old Go `x106-worker` + ttyd combo. The parent ecosystem doc is at `../CLAUDE.md` — read it first for context on the surrounding apps and shared design system.
 
 The Go service was rewritten to Python on 2026-05-09. Old Go source lives in git history under tags `pre-python-rewrite` and earlier — use `git log --oneline -- cmd/ internal/` if you need archaeology.
 
@@ -79,9 +79,10 @@ apps/
   ledger/       # personal finance (transactions, categories, budgets)
   content/      # SiteContent (public + admin upsert)
   vandao/       # Cloud save for the Vấn Đạo game — one JSON blob per player, revision-guarded
-  console/      # VPS console + AI ops assistant (OpenCode Zen + paramiko SSH); see infra/console-setup.md
-terminal_ws/    # Standalone async daemon — WebSocket bridge to a local PTY. Runs as systemd `x106-terminal-ws` (User=root, cwd=/, :7682). Auth via x106_admin JWT cookie. Spawned shell is a root login shell — no sudoers sandbox; same risk profile as the previous ttyd. Powers the admin app's Terminal tab via xterm.js. Setup in infra/terminal-ws-setup.md.
-infra/systemd/  # production unit files (x106-api, x106-celery-worker, x106-celery-beat, x106-terminal-ws)
+  console/      # LEGACY AI ops chat (Gemini + paramiko SSH) — UI removed, slated for deletion with its tables
+  ops/          # admin console cockpit: /admin/ops/{overview,terminals,snippets} — host metrics, tmux sessions, saved snippets (table ops_prefs)
+terminal_ws/    # Standalone async daemon — WebSocket bridge (`/terminal/ws?s=<session>`) that runs `tmux new-session -A` in a PTY. Runs as systemd `x106-terminal-ws` (User=root, :7682). Auth via x106_admin JWT cookie. The shells themselves live in `x106-tmux` (socket /run/x106-console/tmux.sock, config terminal_ws/tmux.conf), so reloads, network drops and deploys only detach — sessions keep running. Root shells, no sandbox. Setup in infra/terminal-ws-setup.md.
+infra/systemd/  # production unit files (x106-api, x106-celery-worker, x106-celery-beat, x106-terminal-ws, x106-tmux)
 infra/console-setup.md  # one-time x106-ops user + ssh key + sudoers setup on VPS
 .github/workflows/deploy.yml
 deploy.sh
@@ -155,7 +156,8 @@ User-auth (cookie x106_session OR Bearer): `GET /users/me`, `GET|PUT /vandao/sav
 Admin-auth (cookie x106_admin OR Bearer with `role:admin`):
 - `GET /admin/content/{app}`, `PUT /admin/content/{app}/{section}`
 - `GET /admin/users`, `POST /admin/users/{id}/{activate|deactivate}`, `DELETE /admin/users/{id}`
-- VPS console: `GET|POST|DELETE /admin/console/sessions[/{id}]`, `POST /admin/console/sessions/{id}/messages`, `GET /admin/console/messages/{id}`, `GET /admin/console/execs/{id}`, `POST /admin/console/execs/{id}/{approve,deny,cancel,explain}`, `GET /admin/console/logs`, `GET|PUT /admin/console/settings`
+- Ops cockpit (admin console): `GET /admin/ops/overview` (host + pm2 + systemd, cached 5s — systemd units listed in `apps/ops/services/host.py:SYSTEMD_UNITS`, add new backends there), `GET /admin/ops/terminals`, `PATCH|DELETE /admin/ops/terminals/{name}`, `GET|PUT /admin/ops/snippets`
+- Legacy VPS console (AI chat, no UI): `GET|POST|DELETE /admin/console/sessions[/{id}]`, `POST /admin/console/sessions/{id}/messages`, `GET /admin/console/messages/{id}`, `GET /admin/console/execs/{id}`, `POST /admin/console/execs/{id}/{approve,deny,cancel,explain}`, `GET /admin/console/logs`, `GET|PUT /admin/console/settings`
 - Cafe: CRUD `GET|POST|PATCH|DELETE /admin/cafe/reviews[/{id}]`, `POST /admin/cafe/uploads/image`; **review agent** `POST|GET /admin/cafe/agent/runs[/{id}]` (POST tạo run → Celery `apps.cafe.tasks.run_cafe_agent_now`; client poll). Agent tự chạy 08:30 VN qua beat (`apps.cafe.tasks.generate_cafe_review`), gate env `CAFE_AGENT_ENABLED` (+`CAFE_AGENT_MIN_CONFIDENCE`); pipeline ở `apps/cafe/agent/` (agy CLI web search → validate giọng tổng-hợp/dedup-slug → Nominatim geocode → đăng qua `CafeReviewWriteSerializer`); audit `cafe_agent_runs`. Test: `manage.py run_cafe_agent --dry-run --force`.
 
 OpenAPI schema: `/api/schema/`. Swagger UI: `/api/docs/`.

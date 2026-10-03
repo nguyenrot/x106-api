@@ -34,6 +34,7 @@ INSTALLED_APPS = [
     "apps.accounts",
     "apps.content",
     "apps.console",
+    "apps.ops",
     "apps.quotes",
     "apps.cafe",
 ]

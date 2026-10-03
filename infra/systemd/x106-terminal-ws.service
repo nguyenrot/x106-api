@@ -1,6 +1,10 @@
 [Unit]
-Description=X106 terminal WebSocket bridge (xterm.js → PTY)
-After=network.target
+Description=X106 terminal WebSocket bridge (xterm.js → tmux)
+# Shell thật nằm trong x106-tmux; bridge này chỉ gắn tmux client vào. Wants=
+# kéo tmux lên khi bridge khởi động, nhưng restart bridge (mỗi lần deploy) không
+# đụng tới tmux — các phiên vẫn sống.
+Wants=x106-tmux.service
+After=network.target x106-tmux.service
 
 [Service]
 Type=simple
@@ -10,7 +14,7 @@ Type=simple
 User=root
 Group=root
 # Keep WorkingDirectory at the app root so `python -m terminal_ws` can find
-# the module. The spawned shell does its own os.chdir("/") in server.py.
+# the module. New tmux sessions start in /var/www (server.py START_DIR).
 WorkingDirectory=/var/www/api
 EnvironmentFile=/var/www/api/.env
 Environment=PYTHONUNBUFFERED=1

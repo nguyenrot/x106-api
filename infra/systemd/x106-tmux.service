@@ -1,0 +1,30 @@
+[Unit]
+Description=X106 console tmux server (giữ shell của admin Terminal sống qua reload/deploy)
+After=network.target
+
+[Service]
+# `tmux -D` = server chạy foreground (không daemonize) và tắt exit-empty, nên
+# systemd giám sát thẳng tiến trình server. Mọi shell của admin Terminal là con
+# của nó → nằm trong cgroup của unit này, KHÔNG phải của x106-terminal-ws, nên
+# deploy x106-api (restart terminal-ws) không giết shell nào.
+# Deploy KHÔNG restart unit này — chỉ restart tay khi chấp nhận mất mọi phiên.
+Type=simple
+User=root
+Group=root
+WorkingDirectory=/var/www
+RuntimeDirectory=x106-console
+RuntimeDirectoryMode=0700
+# Không EnvironmentFile: shell trong tmux không được thấy JWT_SECRET / mật khẩu DB.
+Environment=HOME=/root
+Environment=USER=root
+Environment=LOGNAME=root
+Environment=LANG=en_US.UTF-8
+Environment=PATH=/root/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+ExecStart=/usr/bin/tmux -D -u -S /run/x106-console/tmux.sock -f /var/www/api/terminal_ws/tmux.conf
+Restart=on-failure
+RestartSec=3
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

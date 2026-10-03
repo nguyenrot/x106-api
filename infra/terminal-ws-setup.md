@@ -1,14 +1,53 @@
 # Terminal WebSocket bridge — VPS setup
 
-`x106-terminal-ws.service` replaces the old `ttyd` daemon as the backend for
-the admin app's **Terminal** tab. xterm.js in the browser opens a WebSocket
-to `wss://admin.kynguyen.cc/terminal/ws`, nginx proxies to the bridge on
-`127.0.0.1:7682`, and the bridge spawns a `bash -l` PTY as **root** (cwd `/`).
+The admin console (`admin.kynguyen.cc`, home page) renders xterm.js and opens
+`wss://admin.kynguyen.cc/terminal/ws?s=<session>`. nginx proxies to
+`x106-terminal-ws.service` on `127.0.0.1:7682`, which runs
+`tmux new-session -A -s <session>` in a PTY — i.e. it only **attaches a tmux
+client**. The shells live in a separate tmux server, `x106-tmux.service`
+(socket `/run/x106-console/tmux.sock`, config `terminal_ws/tmux.conf`).
 
-> ⚠️ **Security note:** Same risk profile as the previous ttyd setup — the
-> shell is root, no sudoers sandbox. The single safety net is the
-> `x106_admin` JWT cookie (verified by nginx `auth_request` *and* inside
-> the daemon). Don't expose this beyond the admin cookie gate.
+> ⚠️ **Security note:** the shells are **root**, no sudoers sandbox. The
+> single safety net is the `x106_admin` JWT cookie (verified by nginx
+> `auth_request` *and* inside the daemon). Don't expose this beyond the admin
+> cookie gate.
+
+## Why two units (tmux since 2026-10-03)
+
+Before, every WebSocket forked its own `bash -l`: a reload, a dropped
+connection or **every x106-api deploy** (the workflow restarts
+`x106-terminal-ws`, `KillMode=control-group`) killed every open shell.
+
+- `x106-tmux` runs `tmux -D` (foreground server, `exit-empty` off) — every
+  shell is a child of it, so it sits in *that* unit's cgroup. Deploys never
+  restart it; restarting it by hand kills every session.
+- `x106-terminal-ws` has `Wants=x106-tmux.service`, and before attaching it
+  checks the socket and runs `systemctl start x106-tmux` if needed — the tmux
+  client must never be the one that starts the server (it would land in the
+  bridge's cgroup and die with it).
+- On attach the bridge sends a terminal reset, replays the pane's last 5000
+  lines (`capture-pane -e -J`) and then lets tmux paint the screen, so xterm's
+  own scrollback and Ctrl+Shift+F still work after a reload.
+- tmux is made "invisible" (`tmux.conf`: no prefix key, no status bar, mouse
+  off, no alternate screen); tabs/scrollback/clipboard are xterm.js's job.
+- Session list / rename / kill for the UI: `GET /api/v1/admin/ops/terminals`,
+  `PATCH|DELETE /api/v1/admin/ops/terminals/{name}` (apps/ops).
+
+Useful by hand:
+
+```bash
+tmux -S /run/x106-console/tmux.sock ls                 # sessions
+tmux -S /run/x106-console/tmux.sock attach -t main     # join one from ssh
+systemctl status x106-tmux x106-terminal-ws --no-pager
+```
+
+The unit file ships via the normal deploy (unit sync + `daemon-reload`), and
+the bridge restart at the end of the deploy pulls `x106-tmux` up through
+`Wants=` — no manual step. `systemctl enable x106-tmux` once if you want it up
+at boot before anyone opens the console (optional: the bridge starts it on
+first connect anyway).
+
+## Original setup (ttyd → bridge, 2026-05)
 
 These steps are **one-time** and must be run **manually as root on the VPS**
 the first time you deploy the bridge. After that, regular `git push` to
