@@ -11,7 +11,7 @@ After=network.target
 Type=simple
 User=root
 Group=root
-WorkingDirectory=/var/www
+WorkingDirectory=/
 RuntimeDirectory=x106-console
 RuntimeDirectoryMode=0700
 # Không EnvironmentFile: shell trong tmux không được thấy JWT_SECRET / mật khẩu DB.

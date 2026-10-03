@@ -14,7 +14,7 @@ Type=simple
 User=root
 Group=root
 # Keep WorkingDirectory at the app root so `python -m terminal_ws` can find
-# the module. New tmux sessions start in /var/www (server.py START_DIR).
+# the module. New tmux sessions start in / (server.py START_DIR).
 WorkingDirectory=/var/www/api
 EnvironmentFile=/var/www/api/.env
 Environment=PYTHONUNBUFFERED=1

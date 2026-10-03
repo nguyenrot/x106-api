@@ -66,7 +66,8 @@ TMUX_BIN = os.environ.get("TERMINAL_WS_TMUX", "/usr/bin/tmux")
 TMUX_SOCKET = os.environ.get("X106_TMUX_SOCKET", "/run/x106-console/tmux.sock")
 TMUX_CONF = os.environ.get("X106_TMUX_CONF", str(Path(__file__).with_name("tmux.conf")))
 TMUX_UNIT = os.environ.get("X106_TMUX_UNIT", "x106-tmux.service")
-START_DIR = os.environ.get("TERMINAL_WS_START_DIR", "/var/www")
+# New sessions open at the filesystem root, like the pre-tmux terminal did.
+START_DIR = os.environ.get("TERMINAL_WS_START_DIR", "/")
 HISTORY_LINES = 5000
 FIRST_RESIZE_WAIT_SEC = 2.0
 
