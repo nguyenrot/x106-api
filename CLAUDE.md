@@ -2,7 +2,7 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
-This is the **Python (Django + DRF + Celery)** API backend for the X106 ecosystem. Port 4000, served at `api.kynguyen.cc`. The repo lives at `/var/www/api` on the VPS and runs as the systemd unit `x106-api.service`. Three siblings — `x106-celery-worker.service` (AI ops chat + SSH exec), `x106-celery-beat.service` (recovery + cleanup schedule), `x106-terminal-ws.service` (WebSocket bridge on `127.0.0.1:7682` that attaches the admin console's xterm.js to a tmux session; setup in `infra/terminal-ws-setup.md`) and `x106-tmux.service` (the tmux server holding those shells — deliberately **not** restarted by deploys) — replace the old Go `x106-worker` + ttyd combo. The parent ecosystem doc is at `../CLAUDE.md` — read it first for context on the surrounding apps and shared design system.
+This is the **Python (Django + DRF + Celery)** API backend for the X106 ecosystem. Port 4000, served at `api.kynguyen.cc`. The repo lives at `/var/www/api` on the VPS and runs as the systemd unit `x106-api.service`. Three siblings — `x106-celery-worker.service` (cafe review agent), `x106-celery-beat.service` (its 08:30 schedule), `x106-terminal-ws.service` (WebSocket bridge on `127.0.0.1:7682` that attaches the admin console's xterm.js to a tmux session; setup in `infra/terminal-ws-setup.md`) and `x106-tmux.service` (the tmux server holding those shells — deliberately **not** restarted by deploys) — replace the old Go `x106-worker` + ttyd combo. The parent ecosystem doc is at `../CLAUDE.md` — read it first for context on the surrounding apps and shared design system.
 
 The Go service was rewritten to Python on 2026-05-09. Old Go source lives in git history under tags `pre-python-rewrite` and earlier — use `git log --oneline -- cmd/ internal/` if you need archaeology.
 
@@ -50,7 +50,7 @@ systemctl enable --now x106-api x106-celery-worker x106-celery-beat
 systemctl disable --now x106-worker.service 2>/dev/null || true
 ```
 
-`/var/www/api/.env` contains the runtime env (DJANGO_SECRET_KEY, DB_*, JWT_SECRET, COOKIE_DOMAIN=.kynguyen.cc, REDIS_URL=redis://127.0.0.1:6379/0, GEMINI_API_KEY, CONSOLE_SSH_HOST/PORT/USER/KEY_PATH, etc.). See `infra/console-setup.md` for the console-specific bits.
+`/var/www/api/.env` contains the runtime env (DJANGO_SECRET_KEY, DB_*, JWT_SECRET, COOKIE_DOMAIN=.kynguyen.cc, REDIS_URL=redis://127.0.0.1:6379/0, etc.). `GEMINI_API_KEY` / `CONSOLE_SSH_*` may still be in there — leftovers of the removed AI chat, read by nothing.
 
 ### Migrations on the VPS
 
@@ -79,11 +79,9 @@ apps/
   ledger/       # personal finance (transactions, categories, budgets)
   content/      # SiteContent (public + admin upsert)
   vandao/       # Cloud save for the Vấn Đạo game — one JSON blob per player, revision-guarded
-  console/      # LEGACY AI ops chat (Gemini + paramiko SSH) — UI removed, slated for deletion with its tables
-  ops/          # admin console cockpit: /admin/ops/{overview,terminals,snippets} — host metrics, tmux sessions, saved snippets (table ops_prefs)
+  ops/          # admin console cockpit: /admin/ops/{overview,terminals,snippets,services/action} — host metrics, tmux sessions, saved snippets (table ops_prefs), restart/reload/start of pm2 apps + systemd units
 terminal_ws/    # Standalone async daemon — WebSocket bridge (`/terminal/ws?s=<session>`) that runs `tmux new-session -A` in a PTY. Runs as systemd `x106-terminal-ws` (User=root, :7682). Auth via x106_admin JWT cookie. The shells themselves live in `x106-tmux` (socket /run/x106-console/tmux.sock, config terminal_ws/tmux.conf), so reloads, network drops and deploys only detach — sessions keep running. Root shells, no sandbox. Setup in infra/terminal-ws-setup.md.
 infra/systemd/  # production unit files (x106-api, x106-celery-worker, x106-celery-beat, x106-terminal-ws, x106-tmux)
-infra/console-setup.md  # one-time x106-ops user + ssh key + sudoers setup on VPS
 .github/workflows/deploy.yml
 deploy.sh
 ```
@@ -92,9 +90,9 @@ To add a feature: pick the right app, drop a model into `models.py`, a serialize
 
 ### Database — Meta.db_table pinning
 
-We **do not** let Django generate `<app>_<model>` table names. Every model's `Meta.db_table` is pinned to the exact MySQL table name. Legacy ones came from the Go schema (`users`, `vibes`, `site_content`); new ones (`console_*`, `ledger_*`) are plain snake_case Django-owned. Foreign keys to `User` use `db_constraint=False` because the legacy schema dropped FKs (charset/collation mismatch — see git history for the original comment in `internal/database/schema.go`).
+We **do not** let Django generate `<app>_<model>` table names. Every model's `Meta.db_table` is pinned to the exact MySQL table name. Legacy ones came from the Go schema (`users`, `vibes`, `site_content`); new ones (`ops_prefs`, `cafe_*`) are plain snake_case Django-owned. Foreign keys to `User` use `db_constraint=False` because the legacy schema dropped FKs (charset/collation mismatch — see git history for the original comment in `internal/database/schema.go`).
 
-The old AI-art stack (`artworks`, `llm_jobs`, `llm_usage`, `llm_request_logs`, `llm_conversations*`, `llm_models`, `llm_prompt_versions`, `app_settings`, `app_setting_changes`) was torn down on 2026-05-22 by `apps/core/migrations/0001_drop_legacy_ai.py`. The AI capability now lives entirely in `apps.console` against OpenCode Zen free-tier models.
+The old AI-art stack (`artworks`, `llm_jobs`, `llm_usage`, `llm_request_logs`, `llm_conversations*`, `llm_models`, `llm_prompt_versions`, `app_settings`, `app_setting_changes`) was torn down on 2026-05-22 by `apps/core/migrations/0001_drop_legacy_ai.py`. `apps.console` (the Gemini-based AI ops chat that replaced it) and `apps.quotes` (quotes.kynguyen.cc, retired 2026-09-28) followed on 2026-10-04 via `0002_drop_console_quotes.py` — backup at `/root/backups/console-quotes-before-removal-20261004.sql.gz` on the VPS. The only AI left in this API is the cafe agent shelling out to the agy CLI.
 
 **First deploy used `migrate --fake-initial`** — Django wrote `django_migrations` rows for every initial migration without re-creating the existing tables. From that point forward, schema changes flow through normal Django migrations. The legacy `internal/database/schema.go:EnsureSchema()` additive-ALTER pattern is **retired**; never reimplement it. The legacy `migrations/*.sql` files are gone — historical reference is in git.
 
@@ -109,7 +107,7 @@ Two cookies / two scopes:
 | cookie       | claim required        | lifetime | used by                                      |
 |--------------|-----------------------|----------|----------------------------------------------|
 | x106_session | `user_id` (simplejwt) | 30 days  | /users/me, /journal/*, /ledger/*             |
-| x106_admin   | `role == "admin"`     | 8 hours  | /admin/content/*, /admin/console/*           |
+| x106_admin   | `role == "admin"`     | 8 hours  | /admin/content/*, /admin/ops/*               |
 
 Both signed with `JWT_SECRET` (HS256). Cookie reading lives in `apps.accounts.auth.JWTCookieAuthentication`; admin permission in `apps.core.permissions.IsAdminToken` (also accepts a Django staff session, so the `/admin/` UI gives you the same scope without a separate JWT).
 
@@ -123,29 +121,6 @@ Both signed with `JWT_SECRET` (HS256). Cookie reading lives in `apps.accounts.au
 - One OAuth client is shared by every X106 frontend: authorized JavaScript origins list each frontend, and there must be **no** authorized redirect URI (the popup flow exchanges with `redirect_uri=postmessage`). Blank env → `503`, and frontends hide the button.
 - Throttled at `30/hour` per IP via `ScopedRateThrottle` (scope `auth_google`) — every call spends an outbound request to Google.
 
-### VPS console + AI ops assistant (`apps.console`)
-
-The AI surface in the ecosystem. AI calls run through the **Google Gemini API** via the official `google-genai` SDK, default model `gemini-2.5-flash`; shell commands run via **paramiko SSH** to a dedicated `x106-ops` user on the same VPS — never subprocess on the api service itself.
-
-Four tables (`console_settings`, `console_sessions`, `console_messages`, `console_execs`); the last doubles as audit trail. Lifecycle:
-
-```
-chat message (user) → run_console_chat → LLM tool_call → ConsoleExec (awaiting_confirm)
-                                                                ↓ user Approves
-                                                          run_console_exec → SSH → done
-                                                                ↓
-                                                       run_console_chat (loop)
-                                                                ↓
-                                                  final assistant text → done
-```
-
-Hard caps: `console.max_agent_steps` (default 8) to stop runaway loops; `console.command_timeout_sec` (default 30) on each SSH call; per-task `time_limit=120/soft=90`. Beat tasks: `recover_stuck_execs` (60s), `cleanup_old_execs` (1h, drops >30-day terminal rows).
-
-Safety: `apps.console.services.danger.classify` returns `safe`/`write`/`destructive` from a regex+keyword classifier; every AI command must be Approved regardless of level (policy); `destructive` additionally requires typing the `console.destroy_phrase` (default `DESTROY`).
-
-**Gemini SDK shape:** the agent loop spans multiple Celery tasks separated by user-approval wait time, so we use the SDK's **stateless** `client.aio.models.generate_content` with `automatic_function_calling=disable`. `chat_completion` in `apps/console/services/llm.py` translates the OpenAI-style message list (system/user/assistant/tool) into Gemini `Content` parts and surfaces `function_call`s back as `ToolCall` dataclasses for `tasks.py` to persist as `ConsoleExec` rows.
-
-One-time prod setup (x106-ops user, sshd keys, sudoers whitelist, env vars) lives in `infra/console-setup.md`. Missing env vars → endpoints return 503 with a clear message, no crash.
 
 ### Routes (mounted under `/api/v1`)
 
@@ -156,8 +131,7 @@ User-auth (cookie x106_session OR Bearer): `GET /users/me`, `GET|PUT /vandao/sav
 Admin-auth (cookie x106_admin OR Bearer with `role:admin`):
 - `GET /admin/content/{app}`, `PUT /admin/content/{app}/{section}`
 - `GET /admin/users`, `POST /admin/users/{id}/{activate|deactivate}`, `DELETE /admin/users/{id}`
-- Ops cockpit (admin console): `GET /admin/ops/overview` (host + pm2 + systemd, cached 5s — systemd units listed in `apps/ops/services/host.py:SYSTEMD_UNITS`, add new backends there), `GET /admin/ops/terminals`, `PATCH|DELETE /admin/ops/terminals/{name}`, `GET|PUT /admin/ops/snippets`
-- Legacy VPS console (AI chat, no UI): `GET|POST|DELETE /admin/console/sessions[/{id}]`, `POST /admin/console/sessions/{id}/messages`, `GET /admin/console/messages/{id}`, `GET /admin/console/execs/{id}`, `POST /admin/console/execs/{id}/{approve,deny,cancel,explain}`, `GET /admin/console/logs`, `GET|PUT /admin/console/settings`
+- Ops cockpit (admin console): `GET /admin/ops/overview` (host + pm2 + systemd, cached 5s — systemd units listed in `apps/ops/services/host.py:SYSTEMD_UNITS`, add new backends there), `GET /admin/ops/terminals`, `PATCH|DELETE /admin/ops/terminals/{name}`, `GET|PUT /admin/ops/snippets`, `POST /admin/ops/services/action` (`{kind: pm2|systemd, name, action: restart|reload|start, force?}` — names must be known to the cockpit; `x106-tmux` needs `force` because it kills every terminal; `x106-api` and pm2 `admin-pkn` run detached via `systemd-run` since they serve the request itself → 202)
 - Cafe: CRUD `GET|POST|PATCH|DELETE /admin/cafe/reviews[/{id}]`, `POST /admin/cafe/uploads/image`; **review agent** `POST|GET /admin/cafe/agent/runs[/{id}]` (POST tạo run → Celery `apps.cafe.tasks.run_cafe_agent_now`; client poll). Agent tự chạy 08:30 VN qua beat (`apps.cafe.tasks.generate_cafe_review`), gate env `CAFE_AGENT_ENABLED` (+`CAFE_AGENT_MIN_CONFIDENCE`); pipeline ở `apps/cafe/agent/` (agy CLI web search → validate giọng tổng-hợp/dedup-slug → Nominatim geocode → đăng qua `CafeReviewWriteSerializer`); audit `cafe_agent_runs`. Test: `manage.py run_cafe_agent --dry-run --force`.
 
 OpenAPI schema: `/api/schema/`. Swagger UI: `/api/docs/`.
@@ -169,5 +143,5 @@ Allowed origins live in `x106/settings/base.py:CORS_ALLOWED_ORIGINS` (the five p
 ### Notes
 
 - **All admin routes live under DRF ViewSets** with `@action`s; no hand-rolled route table.
-- **Django `/admin/` UI is enabled** (`/admin/`) — staff users get a free dashboard for editing site_content, console settings, etc.
+- **Django `/admin/` UI is enabled** (`/admin/`) — staff users get a free dashboard for editing site_content, users, etc.
 - **Pagination on admin list endpoints** is via `LimitOffsetPagination` (default 50, max 200) — query params `?limit=&offset=` are unchanged.

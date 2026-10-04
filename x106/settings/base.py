@@ -33,9 +33,7 @@ INSTALLED_APPS = [
     "apps.core",
     "apps.accounts",
     "apps.content",
-    "apps.console",
     "apps.ops",
-    "apps.quotes",
     "apps.cafe",
 ]
 
@@ -174,27 +172,14 @@ PUBLIC_MEDIA_ORIGIN = env.str("PUBLIC_MEDIA_ORIGIN", default="https://api.kynguy
 #   printf '%s' "$raw" | shasum -a 256
 #   # set SERVICE_TOKEN_QUOTES_AGENT_SHA256=<hash> in /var/www/api/.env
 #
-_REGISTERED_SERVICES = ["quotes-agent"]
-SERVICE_TOKENS: dict[str, str] = {}
-for _svc in _REGISTERED_SERVICES:
-    _key = "SERVICE_TOKEN_" + _svc.upper().replace("-", "_") + "_SHA256"
-    _hash = env.str(_key, default="")
-    if _hash:
-        SERVICE_TOKENS[_svc] = _hash.strip().lower()
-del _svc, _key, _hash  # type: ignore[name-defined]
-
-# ─── VPS console (apps.console) ───────────────────────────────────────────
-#
-# AI ops assistant runs LLM calls through the Google Gemini API via the
-# official `google-genai` SDK. Shell execution goes through paramiko SSH to
-# a dedicated `x106-ops` user on the same VPS — never via subprocess on the
-# api service itself. GEMINI_API_KEY + all four CONSOLE_SSH_* env vars must
-# be set on prod systemd units before the feature is usable.
-GEMINI_API_KEY = env.str("GEMINI_API_KEY", default="")
-CONSOLE_SSH_HOST = env.str("CONSOLE_SSH_HOST", default="127.0.0.1")
-CONSOLE_SSH_PORT = env.int("CONSOLE_SSH_PORT", default=22)
-CONSOLE_SSH_USER = env.str("CONSOLE_SSH_USER", default="x106-ops")
-CONSOLE_SSH_KEY_PATH = env.str("CONSOLE_SSH_KEY_PATH", default="")
+# quotes-agent (the only consumer) went away with apps.quotes on 2026-10-04;
+# the mechanism stays for the next machine-to-machine caller.
+_REGISTERED_SERVICES: list[str] = []
+SERVICE_TOKENS: dict[str, str] = {
+    svc: digest.strip().lower()
+    for svc in _REGISTERED_SERVICES
+    if (digest := env.str("SERVICE_TOKEN_" + svc.upper().replace("-", "_") + "_SHA256", default=""))
+}
 
 # ─── DRF & SimpleJWT ──────────────────────────────────────────────────────
 
@@ -248,7 +233,6 @@ CORS_ALLOWED_ORIGINS = [
     "https://kynguyen.cc",
     "https://me.kynguyen.cc",
     "https://admin.kynguyen.cc",
-    "https://quotes.kynguyen.cc",
     "https://cafe.kynguyen.cc",
 ]
 CORS_ALLOW_CREDENTIALS = True
@@ -266,14 +250,6 @@ CELERY_TASK_ACKS_LATE = True
 CELERY_TASK_TRACK_STARTED = True
 CELERY_TIMEZONE = TIME_ZONE
 CELERY_BEAT_SCHEDULE = {
-    "console-recover-stuck-execs": {
-        "task": "apps.console.tasks.recover_stuck_execs",
-        "schedule": 60.0,
-    },
-    "console-cleanup-old-execs": {
-        "task": "apps.console.tasks.cleanup_old_execs",
-        "schedule": 3600.0,
-    },
     # 08:30 giờ Việt Nam — agent tổng hợp 1 bài review quán cà phê Đà Nẵng
     # (no-op khi CAFE_AGENT_ENABLED=false).
     "cafe-agent-daily-review": {
