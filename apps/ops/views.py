@@ -4,7 +4,7 @@
 - GET          /terminals            tmux sessions of the admin Terminal
 - PATCH|DELETE /terminals/{name}     rename (`{"name": "new"}`) / kill a session
 - GET|PUT      /snippets             the console's saved command snippets
-- POST         /services/action      {kind: pm2|systemd, name, action: restart|reload|start, force?}
+- POST         /services/action      {kind: pm2|systemd, name, action: restart|reload|start|stop, force?}
 """
 
 from __future__ import annotations
@@ -39,7 +39,12 @@ class OverviewView(APIView):
     def get(self, _request):
         # Every open admin tab polls this; one /proc sample + pm2 + systemctl
         # per 5s per worker is plenty.
-        return Response(cache.get_or_set(OVERVIEW_CACHE_KEY, host.overview, OVERVIEW_TTL_SEC))
+        data = cache.get_or_set(OVERVIEW_CACHE_KEY, host.overview, OVERVIEW_TTL_SEC)
+        # Tell the UI up front which rows have no Stop button (and why).
+        for kind in ("pm2", "systemd"):
+            for row in data.get(kind) or []:
+                row["stop_blocked"] = actions.stop_block_reason(kind, row["name"])
+        return Response(data)
 
 
 class TerminalListView(APIView):

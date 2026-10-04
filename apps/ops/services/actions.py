@@ -1,4 +1,4 @@
-"""Restart / reload / start a service from the admin console's Services page.
+"""Restart / reload / start / stop a service from the admin console's Services page.
 
 Only names the cockpit already knows are accepted — systemd units from
 `host.SYSTEMD_UNITS`, pm2 apps from a fresh `pm2 jlist` — and everything is
@@ -6,7 +6,9 @@ exec'd as an argv list, never through a shell.
 
 Two targets take down the request that asked for them, so they're fired
 detached and reported as `async`: `x106-api` (this process) and the admin's own
-pm2 app (the Nitro proxy waiting for this response).
+pm2 app (the Nitro proxy waiting for this response). Those two — plus nginx and
+mysql, which take x106-api down with them — can't be *stopped* from here at all:
+nothing on the page could start them again.
 """
 
 from __future__ import annotations
@@ -20,15 +22,39 @@ from . import host
 
 logger = logging.getLogger("x106.ops.actions")
 
-ACTIONS = ("restart", "reload", "start")
+ACTIONS = ("restart", "reload", "start", "stop")
 
 SELF_UNITS = frozenset({"x106-api"})
 SELF_PM2 = frozenset({"admin-pkn"})
 
-# Restarting these needs an explicit `force` — the reason is shown to the user.
-GUARDED_UNITS = {
-    "x106-tmux": "Restart x106-tmux giết mọi phiên terminal đang mở (kể cả agy đang chạy).",
+# Stopping these locks the admin out of this page (new terminal connections
+# authenticate through x106-api too) — refused; the message says how to do it
+# from a terminal that's already open.
+NO_STOP_UNITS = {
+    "nginx": "toàn bộ site, kể cả admin, sẽ sập",
+    "x106-api": "admin mất đăng nhập và terminal mới không kết nối được",
+    "mysql": "x106-api (và admin) sập theo",
 }
+NO_STOP_PM2 = {"admin-pkn": "chính trang admin này sẽ tắt"}
+
+# Need an explicit `force` — the reason is shown to the user first.
+GUARDED: dict[tuple[str, str], str] = {
+    ("x106-tmux", "restart"): "Restart x106-tmux giết mọi phiên terminal đang mở (kể cả agy đang chạy).",
+    ("x106-tmux", "stop"): "Dừng x106-tmux giết mọi phiên terminal đang mở (kể cả agy đang chạy).",
+    ("x106-terminal-ws", "stop"): (
+        "Dừng x106-terminal-ws ngắt mọi tab console cho tới khi bạn Start lại ở đây (phiên tmux vẫn sống)."
+    ),
+}
+
+
+def stop_block_reason(kind: str, name: str) -> str | None:
+    """Why `name` can't be stopped from the UI, or None if it can."""
+    reason = (NO_STOP_UNITS if kind == "systemd" else NO_STOP_PM2).get(name)
+    if not reason:
+        return None
+    cmd = f"systemctl stop {name}" if kind == "systemd" else f"pm2 stop {name}"
+    return f"Không dừng {name} từ đây: {reason}. Nếu chắc chắn, chạy `{cmd}` trong một terminal đang mở."
+
 
 _ENV = {**os.environ, "PATH": host._PATH, "HOME": "/root", "PM2_HOME": "/root/.pm2"}
 _MAX_OUTPUT = 4000
@@ -91,8 +117,10 @@ def _detach(argv: list[str]) -> None:
 def _systemd(name: str, action: str, force: bool) -> ActionResult:
     if name not in host.SYSTEMD_UNITS:
         raise ActionError(f"'{name}' không nằm trong danh sách unit của console.", status=404)
-    if action != "reload" and name in GUARDED_UNITS and not force:
-        raise ActionError(GUARDED_UNITS[name], status=409)
+    if action == "stop" and (reason := stop_block_reason("systemd", name)):
+        raise ActionError(reason, status=403)
+    if (guard := GUARDED.get((name, action))) and not force:
+        raise ActionError(guard, status=409)
     unit = f"{name}.service"
 
     if action == "reload":
@@ -121,6 +149,8 @@ def _pm2(name: str, action: str) -> ActionResult:
         raise ActionError("Không đọc được pm2 jlist.", status=503)
     if name not in {p["name"] for p in procs}:
         raise ActionError(f"pm2 không có app '{name}'.", status=404)
+    if action == "stop" and (reason := stop_block_reason("pm2", name)):
+        raise ActionError(reason, status=403)
 
     if name in SELF_PM2:
         _detach(["pm2", action, name])

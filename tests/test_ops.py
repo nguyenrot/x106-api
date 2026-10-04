@@ -206,7 +206,7 @@ def test_service_action_requires_admin():
 def test_service_action_validates_names_and_actions(admin_client, fake_exec):
     assert _act(admin_client, kind="systemd", name="sshd", action="restart").status_code == 404
     assert _act(admin_client, kind="pm2", name="nope", action="restart").status_code == 404
-    assert _act(admin_client, kind="systemd", name="nginx", action="stop").status_code == 400
+    assert _act(admin_client, kind="systemd", name="nginx", action="disable").status_code == 400
     assert _act(admin_client, kind="docker", name="x", action="restart").status_code == 400
 
 
@@ -261,3 +261,44 @@ def test_pm2_restart_runs_synchronously(admin_client, fake_exec):
     res = _act(admin_client, kind="pm2", name="vibe-hub", action="reload")
     assert res.status_code == 200 and res.json()["detached"] is False
     assert ["pm2", "reload", "vibe-hub"] in calls["run"]
+
+
+def test_stop_refuses_units_that_lock_the_admin_out(admin_client, fake_exec):
+    calls, _ = fake_exec
+    for kind, name in [
+        ("systemd", "nginx"),
+        ("systemd", "x106-api"),
+        ("systemd", "mysql"),
+        ("pm2", "admin-pkn"),
+    ]:
+        res = _act(admin_client, kind=kind, name=name, action="stop", force=True)
+        assert res.status_code == 403, name
+        assert "terminal" in res.json()["detail"]
+    assert calls["run"] == [] and calls["detach"] == []
+
+
+def test_stop_guards_and_runs(admin_client, fake_exec):
+    calls, _ = fake_exec
+    assert _act(admin_client, kind="systemd", name="x106-terminal-ws", action="stop").status_code == 409
+    assert _act(admin_client, kind="systemd", name="x106-tmux", action="stop").status_code == 409
+    assert _act(admin_client, kind="systemd", name="lumi-api", action="stop").status_code == 200
+    assert _act(admin_client, kind="pm2", name="vibe-hub", action="stop").status_code == 200
+    assert ["systemctl", "stop", "lumi-api.service"] in calls["run"]
+    assert ["pm2", "stop", "vibe-hub"] in calls["run"]
+    # x106-terminal-ws can still be restarted without force — only stop is guarded
+    assert _act(admin_client, kind="systemd", name="x106-terminal-ws", action="restart").status_code == 200
+
+
+def test_overview_marks_rows_without_a_stop_button(admin_client, monkeypatch):
+    monkeypatch.setattr(
+        host,
+        "overview",
+        lambda: {
+            "host": {},
+            "pm2": [{"name": "admin-pkn"}, {"name": "vibe-hub"}],
+            "systemd": [{"name": "nginx"}],
+        },
+    )
+    data = admin_client.get("/api/v1/admin/ops/overview").json()
+    assert data["pm2"][0]["stop_blocked"] and data["pm2"][1]["stop_blocked"] is None
+    assert data["systemd"][0]["stop_blocked"]
