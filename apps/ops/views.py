@@ -4,9 +4,12 @@
 - GET          /terminals            tmux sessions of the admin Terminal
 - PATCH|DELETE /terminals/{name}     rename (`{"name": "new"}`) / kill a session
 - GET|PUT      /snippets             the console's saved command snippets
+- POST         /services/action      {kind: pm2|systemd, name, action: restart|reload|start, force?}
 """
 
 from __future__ import annotations
+
+import logging
 
 from django.core.cache import cache
 from rest_framework import serializers, status
@@ -17,7 +20,9 @@ from rest_framework.views import APIView
 from apps.core.permissions import IsAdminToken
 
 from .models import OpsPref
-from .services import host, tmux
+from .services import actions, host, tmux
+
+logger = logging.getLogger("x106.ops.views")
 
 OVERVIEW_CACHE_KEY = "ops:overview"
 OVERVIEW_TTL_SEC = 5
@@ -108,3 +113,26 @@ class SnippetsView(APIView):
         ser.is_valid(raise_exception=True)
         OpsPref.objects.update_or_create(key=self.KEY, defaults={"data": ser.validated_data})
         return Response({"items": ser.validated_data})
+
+
+class ServiceActionView(APIView):
+    permission_classes = [IsAdminToken]
+
+    def post(self, request):
+        kind = str(request.data.get("kind", ""))
+        name = str(request.data.get("name", ""))
+        action = str(request.data.get("action", ""))
+        user = getattr(request.user, "username", "?")
+        try:
+            result = actions.run(kind, name, action, force=bool(request.data.get("force")), user=user)
+        except actions.ActionError as err:
+            logger.warning(
+                "ops action by %s refused/failed: %s %s %s — %s", user, kind, action, name, err.detail
+            )
+            return Response({"detail": err.detail, "output": err.output}, status=err.status)
+        # The next overview poll must see the new state, not a 5s-old snapshot.
+        cache.delete(OVERVIEW_CACHE_KEY)
+        return Response(
+            {"ok": True, "detached": result.detached, "output": result.output},
+            status=status.HTTP_202_ACCEPTED if result.detached else status.HTTP_200_OK,
+        )

@@ -85,16 +85,17 @@ def test_parse_pm2_drops_env_and_keeps_panel_fields():
 def test_parse_systemctl_show_skips_missing_units_and_orders_like_registry():
     raw = (
         "NRestarts=0\nMemoryCurrent=415080448\nId=x106-api.service\nDescription=X106 API\n"
-        "LoadState=loaded\nActiveState=active\nSubState=running\nActiveEnterTimestamp=@1790740980\n\n"
+        "LoadState=loaded\nActiveState=active\nSubState=running\nActiveEnterTimestamp=@1790740980\nCanReload=no\n\n"
         "NRestarts=0\nMemoryCurrent=[not set]\nId=nope.service\nDescription=nope.service\n"
         "LoadState=not-found\nActiveState=inactive\nSubState=dead\nActiveEnterTimestamp=\n\n"
         "NRestarts=2\nMemoryCurrent=18446744073709551615\nId=nginx.service\nDescription=nginx\n"
-        "LoadState=loaded\nActiveState=failed\nSubState=failed\nActiveEnterTimestamp=@1790740979\n"
+        "LoadState=loaded\nActiveState=failed\nSubState=failed\nActiveEnterTimestamp=@1790740979\nCanReload=yes\n"
     )
     rows = host.parse_systemctl_show(raw)
     assert [r["name"] for r in rows] == ["nginx", "x106-api"]
     assert rows[0]["memory"] is None and rows[0]["restarts"] == 2 and rows[0]["started_at"] is None
     assert rows[1]["memory"] == 415080448 and rows[1]["started_at"].startswith("2026-")
+    assert rows[0]["can_reload"] is True and rows[1]["can_reload"] is False
 
 
 def test_parse_meminfo_converts_kb_to_bytes():
@@ -166,3 +167,97 @@ def test_snippets_roundtrip_and_validation(admin_client):
     res = admin_client.put(url, data=json.dumps({"items": bad}), content_type="application/json")
     assert res.status_code == 400
     assert admin_client.get(url).json() == {"items": items}
+
+
+# ─── service actions ──────────────────────────────────────────────────────
+
+from apps.ops.services import actions  # noqa: E402
+
+
+@pytest.fixture
+def fake_exec(monkeypatch):
+    """Record every command instead of running it; `results` maps argv prefix → (rc, output)."""
+    calls: dict[str, list] = {"run": [], "detach": []}
+    results: dict[tuple, tuple[int, str]] = {}
+
+    def run(argv, timeout=45):
+        calls["run"].append(argv)
+        for prefix, res in results.items():
+            if tuple(argv[: len(prefix)]) == prefix:
+                return res
+        return 0, "ok"
+
+    monkeypatch.setattr(actions, "_run", run)
+    monkeypatch.setattr(actions, "_detach", lambda argv: calls["detach"].append(argv))
+    monkeypatch.setattr(host, "pm2_processes", lambda: [{"name": "vibe-hub"}, {"name": "admin-pkn"}])
+    return calls, results
+
+
+def _act(client, **body):
+    return client.post(
+        "/api/v1/admin/ops/services/action", data=json.dumps(body), content_type="application/json"
+    )
+
+
+def test_service_action_requires_admin():
+    assert _act(Client(), kind="systemd", name="nginx", action="restart").status_code == 401
+
+
+def test_service_action_validates_names_and_actions(admin_client, fake_exec):
+    assert _act(admin_client, kind="systemd", name="sshd", action="restart").status_code == 404
+    assert _act(admin_client, kind="pm2", name="nope", action="restart").status_code == 404
+    assert _act(admin_client, kind="systemd", name="nginx", action="stop").status_code == 400
+    assert _act(admin_client, kind="docker", name="x", action="restart").status_code == 400
+
+
+def test_restarting_tmux_needs_force(admin_client, fake_exec):
+    calls, _ = fake_exec
+    res = _act(admin_client, kind="systemd", name="x106-tmux", action="restart")
+    assert res.status_code == 409 and "terminal" in res.json()["detail"]
+    assert calls["run"] == []
+    assert (
+        _act(admin_client, kind="systemd", name="x106-tmux", action="restart", force=True).status_code == 200
+    )
+    assert ["systemctl", "restart", "x106-tmux.service"] in calls["run"]
+
+
+def test_self_targets_are_detached(admin_client, fake_exec):
+    calls, _ = fake_exec
+    res = _act(admin_client, kind="systemd", name="x106-api", action="restart")
+    assert res.status_code == 202 and res.json()["detached"] is True
+    res = _act(admin_client, kind="pm2", name="admin-pkn", action="restart")
+    assert res.status_code == 202
+    assert calls["detach"] == [["systemctl", "restart", "x106-api.service"], ["pm2", "restart", "admin-pkn"]]
+    assert calls["run"] == []
+
+
+def test_reload_checks_support_and_nginx_config(admin_client, fake_exec):
+    calls, results = fake_exec
+    results[("systemctl", "show")] = (0, "no")
+    assert _act(admin_client, kind="systemd", name="mysql", action="reload").status_code == 400
+
+    results[("systemctl", "show")] = (0, "yes")
+    results[("nginx", "-t")] = (1, "nginx: [emerg] unexpected }")
+    res = _act(admin_client, kind="systemd", name="nginx", action="reload")
+    assert res.status_code == 400 and "emerg" in res.json()["output"]
+    assert ["systemctl", "reload", "nginx.service"] not in calls["run"]
+
+    results[("nginx", "-t")] = (0, "syntax is ok")
+    assert _act(admin_client, kind="systemd", name="nginx", action="reload").status_code == 200
+    assert ["systemctl", "reload", "nginx.service"] in calls["run"]
+
+
+def test_failed_restart_reports_status(admin_client, fake_exec):
+    _, results = fake_exec
+    results[("systemctl", "restart")] = (1, "Job for lumi-api.service failed")
+    results[("systemctl", "status")] = (3, "Active: failed (Result: exit-code)")
+    res = _act(admin_client, kind="systemd", name="lumi-api", action="restart")
+    assert res.status_code == 500
+    assert "Job for lumi-api" in res.json()["output"] and "Active: failed" in res.json()["output"]
+
+
+def test_pm2_restart_runs_synchronously(admin_client, fake_exec):
+    calls, _ = fake_exec
+    res = _act(admin_client, kind="pm2", name="vibe-hub", action="reload")
+    assert res.status_code == 200 and res.json()["detached"] is False
+    assert ["pm2", "reload", "vibe-hub"] in calls["run"]

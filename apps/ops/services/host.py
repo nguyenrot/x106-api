@@ -206,6 +206,7 @@ def parse_systemctl_show(raw: str) -> list[dict]:
                 "sub": props.get("SubState"),
                 "memory": _int_or_none(props.get("MemoryCurrent")),
                 "restarts": _int_or_none(props.get("NRestarts")) or 0,
+                "can_reload": props.get("CanReload") == "yes",
                 "started_at": (
                     datetime.fromtimestamp(int(ts[1:]), tz=UTC).isoformat()
                     if ts.startswith("@") and ts[1:].isdigit() and props.get("ActiveState") == "active"
@@ -225,7 +226,7 @@ def systemd_units() -> list[dict] | None:
             "show",
             "--timestamp=unix",
             "-p",
-            "Id,Description,LoadState,ActiveState,SubState,MemoryCurrent,ActiveEnterTimestamp,NRestarts",
+            "Id,Description,LoadState,ActiveState,SubState,MemoryCurrent,ActiveEnterTimestamp,NRestarts,CanReload",
             *[f"{u}.service" for u in SYSTEMD_UNITS],
         ]
     )
